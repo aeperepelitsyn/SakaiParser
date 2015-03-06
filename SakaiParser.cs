@@ -9,6 +9,7 @@
 // version 1.04 (20150112)
 // version 1.05 (20150228)
 // version 1.06 (20150301)
+// version 1.07 (20150306)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -96,7 +97,9 @@ namespace SakaiParser
         ParseAssignments,
         LoadStudents,
         ReloadStudents,
-        LoadStudentAttachments
+        LoadStudentAttachments,
+        OpenManageGroupsSection,
+        LoadGroupsEditor
     }
 
     class SakaiParser285
@@ -111,6 +114,8 @@ namespace SakaiParser
 
         string worksiteName;
         string linkToMembership;
+        string linkToSiteEditor;
+        string linkToManageGroupsSection;
 
         int indexOfProcessingAssignment;
         int indexOfProcessingStudent;
@@ -216,6 +221,19 @@ namespace SakaiParser
                             linkToAssignments = link.GetAttribute("href");
 
                     if (linkToAssignments == "") throw new Exception("Unable to find Assignments link");
+
+                    // Now we are at Home of the WorkSite
+                    // Parsing site editor link.
+
+                    linkToSiteEditor = "";
+                    links = webBrowser.Document.GetElementsByTagName("a");
+                    foreach (HtmlElement link in links)
+                        if (link.GetAttribute("className") == "icon-sakai-siteinfo")
+                            linkToSiteEditor = link.GetAttribute("href");
+
+                    if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
+
+                    // If it is okay, we have linkToSiteEditor
 
                     webBrowserTask = WebBrowserTask.ParseAssignments;
                     webBrowser.Navigate(linkToAssignments);
@@ -383,11 +401,64 @@ namespace SakaiParser
                     }
 
                     break;
+                case WebBrowserTask.OpenManageGroupsSection:
+                    // Todo: find link to Manage Groups section.
+
+                    linkToManageGroupsSection = "";
+                    HtmlElementCollection lisElementCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
+                    foreach (HtmlElement element in lisElementCollection)
+                    {
+                        if (element.GetAttribute("role") == "menuitem" && element.InnerHtml.Contains("doManageGroupHelper"))
+                        {
+                            MatchCollection matchCollection = Regex.Matches(element.InnerHtml,
+                                @"(onclick)\s*=\s*""\s*(location)\s*=\s*'(?<link>.*)'\s*;");
+                            linkToManageGroupsSection = matchCollection[0].Groups["link"].Value;
+                        }
+                    }
+
+                    // linkToManageGroupsSection contains link to Manage Groups section. 
+                    // We can navigate it right now.
+
+                    webBrowser.Document.Window.Frames[1].Navigate(linkToManageGroupsSection);
+
+                    // LoadGroupsEditor is a page where we set name of group and add participants.
+                    webBrowserTask = WebBrowserTask.LoadGroupsEditor;
+
+                    break;
+                case WebBrowserTask.LoadGroupsEditor:
+
+                    HtmlElementCollection liElementCollection =
+                        webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
+                    foreach (HtmlElement htmlElement in liElementCollection.Cast<HtmlElement>().Where(htmlElement => htmlElement.GetAttribute("className") == "firstToolBarItem"))
+                    {
+                        // Todo: write code!
+                    }
+
+                    break;
                 case WebBrowserTask.Idle:
                 default:
                     break;
             }
         }
+
+
+        /// <summary>
+        /// Creates new group with specified name and students to add.
+        /// </summary>
+        /// <param name="studentIDs">Students IDs</param>
+        /// <returns>The count of added students</returns>
+        public int CreateNewGroup(string groupName, string[] studentIDs)
+        {
+            int countOfAddedStudents = 0;
+
+            if(linkToSiteEditor == "") throw new Exception("Link to SiteEditor is empty. Can't create new group.");
+
+            webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
+            webBrowser.Navigate(linkToSiteEditor);
+
+            return countOfAddedStudents;
+        }
+
 
         /// <summary>
         /// Method works with html and gets all required information about students
@@ -457,6 +528,11 @@ namespace SakaiParser
             return dctAssignmentItems[assignmentTitle].StudentInfosDictionary;
         }
 
+        /// <summary>
+        /// Returns an array of strings that contain student IDs.
+        /// </summary>
+        /// <param name="assignmentTitle">The title of assignment</param>
+        /// <returns></returns>
         public String[] GetStudentIDs(string assignmentTitle)
         {
             return dctAssignmentItems[assignmentTitle].StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
@@ -479,7 +555,7 @@ namespace SakaiParser
                 return;
             webBrowserTask = WebBrowserTask.ReloadStudents;
 
-            if (dctAssignmentItems.Count >= 1) // Load into the main frame students
+            if (dctAssignmentItems.Count >= 1) // Load students into the main frame
             {
                 dctStudentInfos.Clear();
                 confidentLoad = true;
@@ -488,7 +564,7 @@ namespace SakaiParser
         }
 
         /// <summary>
-        /// Get the names of assignments in the specified Site (Worksite).
+        /// Gets the names of assignments in the specified Site (Worksite).
         /// </summary>
         /// <returns>List of Assignments</returns>
         public Assignment[] GetAssignmentItems()
