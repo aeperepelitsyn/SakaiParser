@@ -10,13 +10,16 @@
 // version 1.05 (20150228)
 // version 1.06 (20150301)
 // version 1.07 (20150306)
+// version 1.08 (20150308)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace SakaiParser
@@ -99,7 +102,8 @@ namespace SakaiParser
         ReloadStudents,
         LoadStudentAttachments,
         OpenManageGroupsSection,
-        LoadGroupsEditor
+        LoadGroupsEditor,
+        AddNewGroup
     }
 
     class SakaiParser285
@@ -116,6 +120,13 @@ namespace SakaiParser
         string linkToMembership;
         string linkToSiteEditor;
         string linkToManageGroupsSection;
+        string linkToCreateNewGroupSection;
+
+        int addingStudentsCount;
+
+        string addingGroupName;
+        string addingGroupDescription;
+        string[] addingStudentIDs;
 
         int indexOfProcessingAssignment;
         int indexOfProcessingStudent;
@@ -199,8 +210,8 @@ namespace SakaiParser
                     webBrowser.Navigate(dctWorksites[worksiteName]);
 
                     break;
-                case WebBrowserTask.GetMembershipLink:   
-           
+                case WebBrowserTask.GetMembershipLink:
+
                     HtmlElementCollection linksCollection = webBrowser.Document.GetElementsByTagName("a");
                     foreach(HtmlElement link in linksCollection)
                         if (link.GetAttribute("className") == "icon-sakai-membership")
@@ -235,8 +246,12 @@ namespace SakaiParser
 
                     // If it is okay, we have linkToSiteEditor
 
-                    webBrowserTask = WebBrowserTask.ParseAssignments;
-                    webBrowser.Navigate(linkToAssignments);
+                    //webBrowserTask = WebBrowserTask.Idle;
+
+                    //////////////////////////////////////////////////////////////////////////////////
+                    /*webBrowserTask = WebBrowserTask.ParseAssignments;
+                    webBrowser.Navigate(linkToAssignments);*/
+                    //////////////////////////////////////////////////////////////////////////////////
 
                     break;
                 case WebBrowserTask.ParseAssignments:
@@ -419,20 +434,82 @@ namespace SakaiParser
                     // linkToManageGroupsSection contains link to Manage Groups section. 
                     // We can navigate it right now.
 
+                    //webBrowser.Document.Window.Frames[1].Navigate("javascript:location = 'http://elearn.csn.khai.edu/xsl-portal/tool/4ae2da01-0200-4d8b-ae6c-9104a54434a2?panel=Main&sakai_action=doManageGroupHelper'");
                     webBrowser.Document.Window.Frames[1].Navigate(linkToManageGroupsSection);
 
+
+                    //webBrowser.Navigate(linkToManageGroupsSection);
                     // LoadGroupsEditor is a page where we set name of group and add participants.
                     webBrowserTask = WebBrowserTask.LoadGroupsEditor;
 
+                    confidentLoad = true; // The Frame URL of doesn't match Browser URL, beacuse Browser URL has nothing to do with frame.
+                    //webBrowser_DocumentCompleted(webBrowser, e);
+
                     break;
                 case WebBrowserTask.LoadGroupsEditor:
+                    // Here we find the link to Create New Group section
 
+                    linkToCreateNewGroupSection = "";
+                    
                     HtmlElementCollection liElementCollection =
                         webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
                     foreach (HtmlElement htmlElement in liElementCollection.Cast<HtmlElement>().Where(htmlElement => htmlElement.GetAttribute("className") == "firstToolBarItem"))
                     {
-                        // Todo: write code!
+                        if (htmlElement.InnerHtml.Contains("GroupEdit") &&
+                            htmlElement.InnerHtml.Contains("item_control"))
+                        {
+                            MatchCollection matchCollection = Regex.Matches(htmlElement.InnerHtml,
+                                "<[a|A].*href\\s*=\\s*[\"|'](?<link>.*)[\"|']\\s*>");
+                            linkToCreateNewGroupSection = matchCollection[0].Groups["link"].Value;
+                        }
                     }
+
+                    if(linkToCreateNewGroupSection == "") throw new Exception("Link to Create New Group is not found.");
+
+                    confidentLoad = true; // The Frame URL of doesn't match Browser URL, beacuse Browser URL has nothing to do with frame.
+                    webBrowser.Document.Window.Frames[1].Navigate(linkToCreateNewGroupSection);
+
+                    // Browser is navigated to linkToCreateNewGroupSection
+                    // Now lets add new group. 
+                    
+                    webBrowserTask = WebBrowserTask.AddNewGroup;
+
+                    break;
+                case WebBrowserTask.AddNewGroup:
+
+                    // Description adding is not implemented yet.
+
+                    HtmlWindow addGroupFrame = webBrowser.Document.Window.Frames[1];
+
+                    addGroupFrame.Document.GetElementById("group_title").SetAttribute("value", addingGroupName);
+
+                    HtmlElement selectOprionsElement = addGroupFrame.Document.GetElementById("siteMembers-selection");
+                    HtmlElementCollection options = selectOprionsElement.Document.GetElementsByTagName("option");
+
+                    Dictionary<string, int> dctSelectionOptions = new Dictionary<string, int>();
+
+                    for (int i = 0; i < options.Count; i++)
+                    {
+                        MatchCollection matches = Regex.Matches(options[i].OuterHtml, ">.*\\((?<id>.*)\\)\\s*<");
+                        dctSelectionOptions.Add(
+                            matches.Count != 0 ? matches[0].Groups["id"].Value : options[i].InnerText, i);
+                    }
+
+                    foreach (string id in addingStudentIDs)
+                    {
+                        addGroupFrame.Document.GetElementsByTagName("option")[dctSelectionOptions[id]].SetAttribute("selected", "selected");
+                        addingStudentsCount++;
+                    }
+
+                    if (addingStudentIDs.Length != 0)
+                        addGroupFrame.Document.GetElementById("siteMembers-selection").InvokeMember("ondblclick");
+
+                    addGroupFrame.Document.GetElementById("save").InvokeMember("click");
+                    //addGroupFrame.Document.GetElementById("pw").SetAttribute("value", Password);
+                    //addGroupFrame.Navigate("javascript:document.forms[0].submit()");
+                    //webBrowserTask = WebBrowserTask.GetMembershipLink;
+
+                    webBrowserTask = WebBrowserTask.Idle;
 
                     break;
                 case WebBrowserTask.Idle:
@@ -441,7 +518,6 @@ namespace SakaiParser
             }
         }
 
-
         /// <summary>
         /// Creates new group with specified name and students to add.
         /// </summary>
@@ -449,14 +525,23 @@ namespace SakaiParser
         /// <returns>The count of added students</returns>
         public int CreateNewGroup(string groupName, string[] studentIDs)
         {
-            int countOfAddedStudents = 0;
+            return CreateNewGroup(groupName, "", studentIDs);
+        }
 
-            if(linkToSiteEditor == "") throw new Exception("Link to SiteEditor is empty. Can't create new group.");
+        private int CreateNewGroup(string groupName, string groupDescription, string[] studentIDs)
+        {
+            addingStudentsCount = 0;
+
+            if (linkToSiteEditor == "") throw new Exception("Link to SiteEditor is empty. Can't create new group.");
+
+            addingGroupName = groupName;
+            addingGroupDescription = groupDescription;
+            addingStudentIDs = studentIDs;
 
             webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
             webBrowser.Navigate(linkToSiteEditor);
 
-            return countOfAddedStudents;
+            return addingStudentsCount;
         }
 
 
