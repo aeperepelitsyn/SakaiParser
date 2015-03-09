@@ -11,6 +11,7 @@
 // version 1.06 (20150301)
 // version 1.07 (20150306)
 // version 1.08 (20150308)
+// version 1.09 (20150309) Fixed issue of authorization using partial URL (aeperepelitsyn)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -176,6 +177,7 @@ namespace SakaiParser
             if (!confidentLoad)
             {
                 if (e.Url != webBrowser.Url) return; // If we have not reached destination URL
+                if (webBrowser.DocumentTitle == "") return; // Waiting for page
             }
             else // Web form has been reloaded, we know confidently
             {
