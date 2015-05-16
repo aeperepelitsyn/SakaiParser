@@ -13,6 +13,7 @@
 // version 1.08 (20150308)
 // version 1.09 (20150309) Fixed issue of authorization using partial URL (aeperepelitsyn)
 // version 1.10 (20150320) Added asynchronous group deleting
+// version 1.11 (20150517) Added comments for methods. Fixied issue with Initialize(), GetAssignmentItems(), etc.
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -49,6 +50,11 @@ namespace SakaiParser
         public string Due { get; set; }
         public string InNew { get; set; }
         public string Scale { get; set; }
+
+        public static implicit operator String(Assignment a)
+        {
+            return a.Title;
+        }
 
         public override string ToString()
         {
@@ -135,6 +141,7 @@ namespace SakaiParser
         string linkToSiteEditor;
         string linkToManageGroupsSection;
         string linkToCreateNewGroupSection;
+        string linkToAssignments;
 
         int addingStudentsCount;
 
@@ -150,12 +157,15 @@ namespace SakaiParser
         bool confidentLoad;
         bool attachmentPresent;
 
+        bool assignmentsParsed;
+
         public SakaiParser285(WebBrowser webBrowser, string initialUrl, string userName, string password)
         {
             InitialUrl = initialUrl;
             UserName = userName;
             Password = password;
             confidentLoad = false;
+            assignmentsParsed = false;
             dctWorksites = new Dictionary<string, string>();
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
@@ -172,22 +182,37 @@ namespace SakaiParser
         public string UserName { get; set; }
         public string Password { get; set; }
 
+        /// <summary>
+        /// Initializes program passing Login in navigating to specified worksite.
+        /// </summary>
+        /// <param name="worksiteName">The worksite</param>
         public void Initialize(string worksiteName)
         {
-            SetWorksiteName(worksiteName);
+            this.worksiteName = worksiteName;
             Initialize();
             // Than login when document is completed
         }
 
+        /// <summary>
+        /// Initializes program passing Login in.
+        /// </summary>
         public void Initialize()
         {
             webBrowserTask = WebBrowserTask.LogIn;
             webBrowser.Navigate(InitialUrl);
         }
 
+        /// <summary>
+        /// Selects the worksite name.
+        /// The name should be existing.
+        /// </summary>
+        /// <param name="worksiteName">The name of the worksite</param>
         public void SetWorksiteName(string worksiteName)
         {
             this.worksiteName = worksiteName;
+
+            webBrowserTask = WebBrowserTask.GoToAssignments;
+            webBrowser.Navigate(dctWorksites[worksiteName]);
         }
 
         void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
@@ -226,8 +251,11 @@ namespace SakaiParser
 
                     // Worksites in dctWorksites
 
-                    webBrowserTask = WebBrowserTask.GoToAssignments;
-                    webBrowser.Navigate(dctWorksites[worksiteName]);
+                    if (!String.IsNullOrWhiteSpace(worksiteName))
+                    {
+                        webBrowserTask = WebBrowserTask.GoToAssignments;
+                        webBrowser.Navigate(dctWorksites[worksiteName]);
+                    }
 
                     break;
                 case WebBrowserTask.GetMembershipLink:
@@ -245,7 +273,6 @@ namespace SakaiParser
                 case WebBrowserTask.GoToAssignments:
                     // Now we are at HOME link, maybe
 
-                    string linkToAssignments = "";
                     HtmlElementCollection links = webBrowser.Document.GetElementsByTagName("a");
                     foreach(HtmlElement link in links)
                         if(link.GetAttribute("className") == "icon-sakai-assignment-grades")
@@ -332,29 +359,22 @@ namespace SakaiParser
                             }
                         }
                     }
+                    // Assignments are supposed to be parsed
+                    assignmentsParsed = true;
+                    break;
+                    // We have all assignments. Go to LoadStudents
 
-                    // We have all assignments. Go to TryLoadStudents
-                    indexOfProcessingAssignment = 0;
-                    webBrowserTask = WebBrowserTask.LoadStudents;
-
-                    if (dctAssignmentItems.Count >= 1) // Load into the main frame students
-                    {
-                        dctStudentInfos.Clear();
-                        confidentLoad = true;
-                        webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
-                    }
 
                     break;
                 case WebBrowserTask.ReloadStudents:
 
-                    ParseLoadingStudents();
-
+                    ParseLoadingStudents(indexOfProcessingAssignment);
 
                     break;
                 case WebBrowserTask.LoadStudents:
 
                     // Finding students
-                    ParseLoadingStudents();
+                    ParseLoadingStudents(indexOfProcessingAssignment);
 
                     confidentLoad = true; // We are not women :)
                     indexOfProcessingAssignment++;
@@ -370,9 +390,9 @@ namespace SakaiParser
                         confidentLoad = true; // Here we also men
 
                         attachmentPresent = dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.FilesAttached;
-                        if(attachmentPresent)
+                        if (attachmentPresent)
                             webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.GradeLink); // If you see it you are hero
-                        else webBrowser_DocumentCompleted(webBrowser, e);
+                        else webBrowser_DocumentCompleted(webBrowser, null);
                         // Than the programe will be in LoadStudentAttachments switch case
                     }
                     else webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
@@ -597,7 +617,7 @@ namespace SakaiParser
             }
         }
 
-        public void InvokeGroupDeleting()
+        private void InvokeGroupDeleting()
         {
             HtmlElement deleteButtonInputElement2 = webBrowser.Document.Window.Frames[1].Document.GetElementById("delete-groups");
             deleteButtonInputElement2.InvokeMember("CLICK");
@@ -660,10 +680,10 @@ namespace SakaiParser
         }
 
         /// <summary>
-        /// Method works with html and gets all required information about students
-        /// Works with indexOfProcessingAssignment, it should be set
+        /// Method works with html and gets all required information about students.
+        /// Works with indexOfProcessingAssignment, it should be set.
         /// </summary>
-        private void ParseLoadingStudents()
+        private StudentInfo[] ParseLoadingStudents(int assignmentIndex)
         {
             HtmlElementCollection submissionTable = webBrowser.Document.Window.Frames[1].Document.Forms["listSubmissionsForm"].Document.GetElementsByTagName("table");
 
@@ -714,12 +734,17 @@ namespace SakaiParser
                         }
 
                         if (studentID != "" && studentName != "")
-                            dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.Add(studentID,
+                        {
+                            dctAssignmentItems.ElementAt(assignmentIndex).Value.StudentInfosDictionary.Add(studentID,
                                 new StudentInfo(studentName, studentID, submitted, status, grade, released, gradeLink, attached));
+                                
+                        }
                     }
 
                 }
             }
+
+            return dctAssignmentItems.ElementAt(assignmentIndex).Value.StudentInfosDictionary.Values.ToArray();
         }
 
         public Dictionary<String, StudentInfo> GetStudentsInformation(string assignmentTitle)
@@ -732,9 +757,22 @@ namespace SakaiParser
         /// </summary>
         /// <param name="assignmentTitle">The title of assignment</param>
         /// <returns></returns>
-        public String[] GetStudentIDs(string assignmentTitle)
+        public String[] GetStudentIDs()
         {
-            return dctAssignmentItems[assignmentTitle].StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
+            return dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
+        }
+
+        public void ParseStudentIDsAsync()
+        {
+            indexOfProcessingAssignment = 0;
+            webBrowserTask = WebBrowserTask.ReloadStudents;
+
+            if (dctAssignmentItems.Count >= 1) // Load into the main frame students
+            {
+                dctStudentInfos.Clear();
+                confidentLoad = true;
+                webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
+            }
         }
 
         public void UpdateAssignmentSubmissions(string assignmentTitle)
@@ -769,6 +807,28 @@ namespace SakaiParser
         public Assignment[] GetAssignmentItems()
         {
             return dctAssignmentItems.Values.ToArray();
+        }
+
+        public string[] GetAssignmentItemNames()
+        {
+            return dctAssignmentItems.Values.Select(x => x.Title).ToArray();
+        }
+
+        /// <summary>
+        /// Starts asynchronous student attachments parsing process
+        /// </summary>
+        public void ParseStudentAttachmentsAsync()
+        {
+
+        }
+
+        /// <summary>
+        /// Starts asynchronous assignment items parsing process
+        /// </summary>
+        public void ParseAssignmentItemsAsync()
+        {
+            webBrowserTask = WebBrowserTask.ParseAssignments;
+            webBrowser.Navigate(linkToAssignments);
         }
 
         public String[] GetWorksites()
