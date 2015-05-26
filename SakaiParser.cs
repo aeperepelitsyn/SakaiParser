@@ -12,6 +12,8 @@
 // version 1.07 (20150306)
 // version 1.08 (20150308)
 // version 1.09 (20150309) Fixed issue of authorization using partial URL (aeperepelitsyn)
+// version 1.10 (20150320) Added asynchronous group deleting
+// version 1.11 (20150517) Added comments for methods. Fixied issue with Initialize(), GetAssignmentItems(), etc.
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -48,6 +50,11 @@ namespace SakaiParser
         public string Due { get; set; }
         public string InNew { get; set; }
         public string Scale { get; set; }
+
+        public static implicit operator String(Assignment a)
+        {
+            return a.Title;
+        }
 
         public override string ToString()
         {
@@ -91,6 +98,13 @@ namespace SakaiParser
         }
     }
 
+    public enum GroupEditorSectionTask
+    {
+        CreateNewGroup,
+        DeleteExistingGroup,
+        GetGroupList
+    }
+
     public enum WebBrowserTask
     {
         Idle,
@@ -109,9 +123,14 @@ namespace SakaiParser
 
     class SakaiParser285
     {
+        delegate void ConfirmDeleting();
+
+        ConfirmDeleting confirmDeletingVoid;
+
         WebBrowser webBrowser;
 
         WebBrowserTask webBrowserTask;
+        GroupEditorSectionTask groupSectionTask;
 
         Dictionary<string, string> dctWorksites;
         Dictionary<string, StudentInfo> dctStudentInfos;
@@ -122,6 +141,7 @@ namespace SakaiParser
         string linkToSiteEditor;
         string linkToManageGroupsSection;
         string linkToCreateNewGroupSection;
+        string linkToAssignments;
 
         int addingStudentsCount;
 
@@ -129,11 +149,15 @@ namespace SakaiParser
         string addingGroupDescription;
         string[] addingStudentIDs;
 
+        string deletingGroupName;
+
         int indexOfProcessingAssignment;
         int indexOfProcessingStudent;
 
         bool confidentLoad;
         bool attachmentPresent;
+
+        bool assignmentsParsed;
 
         public SakaiParser285(WebBrowser webBrowser, string initialUrl, string userName, string password)
         {
@@ -141,6 +165,7 @@ namespace SakaiParser
             UserName = userName;
             Password = password;
             confidentLoad = false;
+            assignmentsParsed = false;
             dctWorksites = new Dictionary<string, string>();
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
@@ -148,28 +173,46 @@ namespace SakaiParser
             linkToMembership = "";
             this.webBrowser = webBrowser;
             webBrowser.DocumentCompleted += webBrowser_DocumentCompleted;
+
+
+            confirmDeletingVoid = new ConfirmDeleting(InvokeGroupDeleting);
         }
 
         public string InitialUrl { get; set; }
         public string UserName { get; set; }
         public string Password { get; set; }
 
+        /// <summary>
+        /// Initializes program passing Login in navigating to specified worksite.
+        /// </summary>
+        /// <param name="worksiteName">The worksite</param>
         public void Initialize(string worksiteName)
         {
-            SetWorksiteName(worksiteName);
+            this.worksiteName = worksiteName;
             Initialize();
             // Than login when document is completed
         }
 
+        /// <summary>
+        /// Initializes program passing Login in.
+        /// </summary>
         public void Initialize()
         {
             webBrowserTask = WebBrowserTask.LogIn;
             webBrowser.Navigate(InitialUrl);
         }
 
+        /// <summary>
+        /// Selects the worksite name.
+        /// The name should be existing.
+        /// </summary>
+        /// <param name="worksiteName">The name of the worksite</param>
         public void SetWorksiteName(string worksiteName)
         {
             this.worksiteName = worksiteName;
+
+            webBrowserTask = WebBrowserTask.GoToAssignments;
+            webBrowser.Navigate(dctWorksites[worksiteName]);
         }
 
         void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
@@ -177,7 +220,7 @@ namespace SakaiParser
             if (!confidentLoad)
             {
                 if (e.Url != webBrowser.Url) return; // If we have not reached destination URL
-                if (webBrowser.DocumentTitle == "") return; // Waiting for page
+                if (String.IsNullOrWhiteSpace(webBrowser.DocumentTitle)) return; // Waiting for page
             }
             else // Web form has been reloaded, we know confidently
             {
@@ -208,8 +251,11 @@ namespace SakaiParser
 
                     // Worksites in dctWorksites
 
-                    webBrowserTask = WebBrowserTask.GoToAssignments;
-                    webBrowser.Navigate(dctWorksites[worksiteName]);
+                    if (!String.IsNullOrWhiteSpace(worksiteName))
+                    {
+                        webBrowserTask = WebBrowserTask.GoToAssignments;
+                        webBrowser.Navigate(dctWorksites[worksiteName]);
+                    }
 
                     break;
                 case WebBrowserTask.GetMembershipLink:
@@ -227,7 +273,6 @@ namespace SakaiParser
                 case WebBrowserTask.GoToAssignments:
                     // Now we are at HOME link, maybe
 
-                    string linkToAssignments = "";
                     HtmlElementCollection links = webBrowser.Document.GetElementsByTagName("a");
                     foreach(HtmlElement link in links)
                         if(link.GetAttribute("className") == "icon-sakai-assignment-grades")
@@ -314,29 +359,22 @@ namespace SakaiParser
                             }
                         }
                     }
+                    // Assignments are supposed to be parsed
+                    assignmentsParsed = true;
+                    break;
+                    // We have all assignments. Go to LoadStudents
 
-                    // We have all assignments. Go to TryLoadStudents
-                    indexOfProcessingAssignment = 0;
-                    webBrowserTask = WebBrowserTask.LoadStudents;
-
-                    if (dctAssignmentItems.Count >= 1) // Load into the main frame students
-                    {
-                        dctStudentInfos.Clear();
-                        confidentLoad = true;
-                        webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
-                    }
 
                     break;
                 case WebBrowserTask.ReloadStudents:
 
-                    ParseLoadingStudents();
-
+                    ParseLoadingStudents(indexOfProcessingAssignment);
 
                     break;
                 case WebBrowserTask.LoadStudents:
 
                     // Finding students
-                    ParseLoadingStudents();
+                    ParseLoadingStudents(indexOfProcessingAssignment);
 
                     confidentLoad = true; // We are not women :)
                     indexOfProcessingAssignment++;
@@ -352,9 +390,9 @@ namespace SakaiParser
                         confidentLoad = true; // Here we also men
 
                         attachmentPresent = dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.FilesAttached;
-                        if(attachmentPresent)
+                        if (attachmentPresent)
                             webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.GradeLink); // If you see it you are hero
-                        else webBrowser_DocumentCompleted(webBrowser, e);
+                        else webBrowser_DocumentCompleted(webBrowser, null);
                         // Than the programe will be in LoadStudentAttachments switch case
                     }
                     else webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
@@ -451,30 +489,88 @@ namespace SakaiParser
                 case WebBrowserTask.LoadGroupsEditor:
                     // Here we find the link to Create New Group section
 
-                    linkToCreateNewGroupSection = "";
-                    
-                    HtmlElementCollection liElementCollection =
-                        webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
-                    foreach (HtmlElement htmlElement in liElementCollection.Cast<HtmlElement>().Where(htmlElement => htmlElement.GetAttribute("className") == "firstToolBarItem"))
+                    switch (groupSectionTask)
                     {
-                        if (htmlElement.InnerHtml.Contains("GroupEdit") &&
-                            htmlElement.InnerHtml.Contains("item_control"))
+                        case GroupEditorSectionTask.CreateNewGroup:
                         {
-                            MatchCollection matchCollection = Regex.Matches(htmlElement.InnerHtml,
-                                "<[a|A].*href\\s*=\\s*[\"|'](?<link>.*)[\"|']\\s*>");
-                            linkToCreateNewGroupSection = matchCollection[0].Groups["link"].Value;
+                            linkToCreateNewGroupSection = "";
+
+                            HtmlElementCollection liElementCollection =
+                                webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
+                            foreach (
+                                HtmlElement htmlElement in
+                                    liElementCollection.Cast<HtmlElement>()
+                                        .Where(
+                                            htmlElement => htmlElement.GetAttribute("className") == "firstToolBarItem"))
+                            {
+                                if (htmlElement.InnerHtml.Contains("GroupEdit") &&
+                                    htmlElement.InnerHtml.Contains("item_control"))
+                                {
+                                    MatchCollection matchCollection = Regex.Matches(htmlElement.InnerHtml,
+                                        "<[a|A].*href\\s*=\\s*[\"|'](?<link>.*)[\"|']\\s*>");
+                                    linkToCreateNewGroupSection = matchCollection[0].Groups["link"].Value;
+                                }
+                            }
+
+                            if (linkToCreateNewGroupSection == "")
+                                throw new Exception("Link to Create New Group is not found.");
+
+                            confidentLoad = true;
+                            // The Frame URL of doesn't match Browser URL, beacuse Browser URL has nothing to do with frame.
+                            webBrowser.Document.Window.Frames[1].Navigate(linkToCreateNewGroupSection);
+
+                            // Browser is navigated to linkToCreateNewGroupSection
+                            // Now lets add new group. 
+
+                            webBrowserTask = WebBrowserTask.AddNewGroup;
+
+                            break;
                         }
+                        case GroupEditorSectionTask.DeleteExistingGroup:
+                        {
+
+                            webBrowserTask = WebBrowserTask.Idle;
+
+                            HtmlElementCollection tablesCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("table");
+                            foreach (HtmlElement element in tablesCollection)
+                            {
+                                if (element.GetAttribute("className").Contains("listHier") ||
+                                    element.GetAttribute("className").Contains("lines") || 
+                                    element.GetAttribute("className").Contains("nolines") ||
+                                    element.GetAttribute("className").Contains("centerLines"))
+                                {
+                                    HtmlElementCollection trsCollection = element.GetElementsByTagName("tr");
+                                    foreach (HtmlElement trElement in trsCollection)
+                                    {
+                                        if (trElement.InnerText.Contains(deletingGroupName))
+                                        {
+                                            if (trElement.GetElementsByTagName("span")[0].InnerText == deletingGroupName)
+                                            {
+                                                HtmlElement inputToCheck = trElement.GetElementsByTagName("input")[0];
+                                                inputToCheck.InvokeMember("CLICK");
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            HtmlElement deleteButtonInputElement = webBrowser.Document.Window.Frames[1].Document.GetElementById("delete-groups");
+                            deleteButtonInputElement.InvokeMember("CLICK");
+
+                            new Thread(() =>
+                            {
+                                Thread.Sleep(1000);
+                                Application.OpenForms["Form1"].Invoke(confirmDeletingVoid);
+                            }).Start();
+
+                            break;
+                        }
+                        case GroupEditorSectionTask.GetGroupList:
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException();
                     }
 
-                    if(linkToCreateNewGroupSection == "") throw new Exception("Link to Create New Group is not found.");
-
-                    confidentLoad = true; // The Frame URL of doesn't match Browser URL, beacuse Browser URL has nothing to do with frame.
-                    webBrowser.Document.Window.Frames[1].Navigate(linkToCreateNewGroupSection);
-
-                    // Browser is navigated to linkToCreateNewGroupSection
-                    // Now lets add new group. 
-                    
-                    webBrowserTask = WebBrowserTask.AddNewGroup;
 
                     break;
                 case WebBrowserTask.AddNewGroup:
@@ -515,21 +611,36 @@ namespace SakaiParser
 
                     break;
                 case WebBrowserTask.Idle:
+                    break;
                 default:
                     break;
             }
         }
 
+        private void InvokeGroupDeleting()
+        {
+            HtmlElement deleteButtonInputElement2 = webBrowser.Document.Window.Frames[1].Document.GetElementById("delete-groups");
+            deleteButtonInputElement2.InvokeMember("CLICK");
+        }
+
         /// <summary>
-        /// Creates new group with specified name and students to add.
+        /// Creates new group with specified name and students to add
         /// </summary>
         /// <param name="studentIDs">Students IDs</param>
-        /// <returns>The count of added students</returns>
+        /// <returns>The count of added students. Not implemented yet</returns>
         public int CreateNewGroup(string groupName, string[] studentIDs)
         {
             return CreateNewGroup(groupName, "", studentIDs);
         }
 
+        /// <summary>
+        /// Creates a new group with specified GroupName, Description, students IDs
+        /// The method is Private, because Description adding is not implemented
+        /// </summary>
+        /// <param name="groupName">The name of creating group</param>
+        /// <param name="groupDescription">The description of creating group</param>
+        /// <param name="studentIDs">The student IDs to add in a new group</param>
+        /// <returns>The count of added students. Not implemented yet</returns>
         private int CreateNewGroup(string groupName, string groupDescription, string[] studentIDs)
         {
             addingStudentsCount = 0;
@@ -540,18 +651,39 @@ namespace SakaiParser
             addingGroupDescription = groupDescription;
             addingStudentIDs = studentIDs;
 
+            groupSectionTask = GroupEditorSectionTask.CreateNewGroup;
             webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
             webBrowser.Navigate(linkToSiteEditor);
 
             return addingStudentsCount;
         }
 
+        public bool DeleteGroup(string groupName)
+        {
+            bool result = true;
+
+            if (String.IsNullOrWhiteSpace(linkToSiteEditor)) throw new Exception("Link to SiteEditor is empty. Can't delete new group.");
+            if (String.IsNullOrWhiteSpace(groupName)) throw new ArgumentNullException("The given GroupName is incorrect. Can't delete new group.");
+
+            deletingGroupName = groupName;
+            groupSectionTask = GroupEditorSectionTask.DeleteExistingGroup;
+            webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
+            webBrowser.Navigate(linkToSiteEditor);
+
+            return result;
+        }
+
+
+        public void DownloadStudentsAttachments()
+        {
+            throw new NotImplementedException();
+        }
 
         /// <summary>
-        /// Method works with html and gets all required information about students
-        /// Works with indexOfProcessingAssignment, it should be set
+        /// Method works with html and gets all required information about students.
+        /// Works with indexOfProcessingAssignment, it should be set.
         /// </summary>
-        private void ParseLoadingStudents()
+        private StudentInfo[] ParseLoadingStudents(int assignmentIndex)
         {
             HtmlElementCollection submissionTable = webBrowser.Document.Window.Frames[1].Document.Forms["listSubmissionsForm"].Document.GetElementsByTagName("table");
 
@@ -602,12 +734,17 @@ namespace SakaiParser
                         }
 
                         if (studentID != "" && studentName != "")
-                            dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.Add(studentID,
+                        {
+                            dctAssignmentItems.ElementAt(assignmentIndex).Value.StudentInfosDictionary.Add(studentID,
                                 new StudentInfo(studentName, studentID, submitted, status, grade, released, gradeLink, attached));
+                                
+                        }
                     }
 
                 }
             }
+
+            return dctAssignmentItems.ElementAt(assignmentIndex).Value.StudentInfosDictionary.Values.ToArray();
         }
 
         public Dictionary<String, StudentInfo> GetStudentsInformation(string assignmentTitle)
@@ -620,9 +757,22 @@ namespace SakaiParser
         /// </summary>
         /// <param name="assignmentTitle">The title of assignment</param>
         /// <returns></returns>
-        public String[] GetStudentIDs(string assignmentTitle)
+        public String[] GetStudentIDs()
         {
-            return dctAssignmentItems[assignmentTitle].StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
+            return dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
+        }
+
+        public void ParseStudentIDsAsync()
+        {
+            indexOfProcessingAssignment = 0;
+            webBrowserTask = WebBrowserTask.ReloadStudents;
+
+            if (dctAssignmentItems.Count >= 1) // Load into the main frame students
+            {
+                dctStudentInfos.Clear();
+                confidentLoad = true;
+                webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
+            }
         }
 
         public void UpdateAssignmentSubmissions(string assignmentTitle)
@@ -657,6 +807,28 @@ namespace SakaiParser
         public Assignment[] GetAssignmentItems()
         {
             return dctAssignmentItems.Values.ToArray();
+        }
+
+        public string[] GetAssignmentItemNames()
+        {
+            return dctAssignmentItems.Values.Select(x => x.Title).ToArray();
+        }
+
+        /// <summary>
+        /// Starts asynchronous student attachments parsing process
+        /// </summary>
+        public void ParseStudentAttachmentsAsync()
+        {
+
+        }
+
+        /// <summary>
+        /// Starts asynchronous assignment items parsing process
+        /// </summary>
+        public void ParseAssignmentItemsAsync()
+        {
+            webBrowserTask = WebBrowserTask.ParseAssignments;
+            webBrowser.Navigate(linkToAssignments);
         }
 
         public String[] GetWorksites()
