@@ -24,6 +24,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SakaiParser
@@ -119,9 +120,12 @@ namespace SakaiParser
         LoadStudentAttachments,
         OpenManageGroupsSection,
         LoadGroupsEditor,
+        RenameStudent,
+        ContinueStudentRenaming,
         SelectStudentToGrade,
         GradeStudent,
-        AddNewGroup
+        AddNewGroup,
+        SetNewFirstNameAndLastName
     }
 
     class SakaiParser285
@@ -153,6 +157,11 @@ namespace SakaiParser
 
         string addingGroupName;
         string addingGroupDescription;
+
+        string renamingStudentName;
+        string renamingStudentID;
+        string renamingStudentLastname;
+
         string[] addingStudentIDs;
 
         string deletingGroupName;
@@ -651,6 +660,89 @@ namespace SakaiParser
                         }
                     }
                     break;
+                case WebBrowserTask.RenameStudent:
+                {
+                    HtmlElement inputSearch = webBrowser.Document.Window.Frames[1].Document.GetElementById("search");
+
+                    if(inputSearch == null) throw new NullReferenceException("Input field is NULL.");
+
+                    inputSearch.Document.GetElementById("search").SetAttribute("value", renamingStudentID);
+
+                    HtmlElementCollection framesAs = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+
+                    foreach (HtmlElement a in framesAs)
+                    {
+                        if (a.GetAttribute("title").Contains("Search"))
+                        {
+                            a.InvokeMember("CLICK");
+                            break;
+                        }
+                    }
+
+                    Task asyncTask = new Task(() =>
+                    {
+                        Thread.Sleep(500);
+                    });
+
+                    asyncTask.ContinueWith((a) =>
+                    {
+                        webBrowserTask = WebBrowserTask.ContinueStudentRenaming;
+                        webBrowser_DocumentCompleted(webBrowser, e);
+                        confidentLoad = true;
+
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                    asyncTask.Start();
+
+                    break;
+                }
+                case WebBrowserTask.ContinueStudentRenaming:
+                {
+                    HtmlElementCollection tds = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("td");
+
+                    foreach (HtmlElement td in tds)
+                    {
+                        if (td.GetAttribute("headers").Contains("Eid") && td.InnerText.Contains(renamingStudentID))
+                        {
+                            HtmlElementCollection tdAs = td.GetElementsByTagName("a");
+
+                            foreach (HtmlElement a in tdAs)
+                            {
+                                string innerText = a.InnerText.Trim();
+                                if (innerText.Equals(renamingStudentID))
+                                {
+                                    string href = a.GetAttribute("href");
+
+                                    confidentLoad = true;
+                                    webBrowserTask = WebBrowserTask.SetNewFirstNameAndLastName;
+                                    webBrowser.Document.Window.Frames[1].Navigate(href);
+                                }
+                            }
+
+
+                        }
+                    }
+
+                    break;
+                }
+                case WebBrowserTask.SetNewFirstNameAndLastName:
+                {
+                    HtmlElementCollection inputCollection =
+                        webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+
+                    HtmlElement firstNameInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("first-name");
+                    HtmlElement lastNameInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("last-name");
+
+                    firstNameInput.SetAttribute("value", renamingStudentName);
+                    lastNameInput.SetAttribute("value", renamingStudentLastname);
+
+                    foreach (HtmlElement elem in from HtmlElement he in inputCollection where he.GetAttribute("name").Contains("eventSubmit_doSave") select he)
+                    {
+                        elem.InvokeMember("CLICK");
+                    }
+
+                    break;
+                }
                 case WebBrowserTask.Idle:
                     break;
                 default:
@@ -927,6 +1019,18 @@ namespace SakaiParser
         public void ParseStudentAttachmentsAsync()
         {
 
+        }
+
+        public void RenameUser(string id, string firstName, string lastName)
+        {
+            // Web browser should be navigated to the User tab in Adm. Workspace
+
+            renamingStudentLastname = lastName;
+            renamingStudentName = firstName;
+            renamingStudentID = id;
+
+            webBrowserTask = WebBrowserTask.RenameStudent;
+            webBrowser.Navigate("URL");
         }
 
         /// <summary>
