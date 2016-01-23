@@ -17,6 +17,7 @@
 // version 1.12 (20150526) Added ability to grade an assignments (Alexander Yasko) and IsIdle() method (aeperepelitsyn)
 // version 1.13 (20150529) Added possibility to set first name and last name for specified user by its id
 // version 1.14 (20150601) Fixed issue with User tab for renaming users (Alexander Yasko) and with reloading of student information (aeperepelitsyn)
+// version 1.15 (20160123) Fixed issue with Draft Assignments, Added method ReadWorksitesAsync (aeperepelitsyn)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -264,11 +265,24 @@ namespace SakaiParser
         }
 
         /// <summary>
+        /// Function read worksite names for current authorized user.
+        /// </summary>
+        public void ReadWorksitesAsync()
+        {
+            bool renavigate = (webBrowserTask == WebBrowserTask.Idle);
+            webBrowserTask = WebBrowserTask.GetMembershipLink;
+            if (renavigate)
+            {
+                webBrowser.Navigate(webBrowser.Url);
+            }
+        }
+
+        /// <summary>
         /// Selects the worksite name.
         /// The name should be existing.
         /// </summary>
         /// <param name="worksiteName">The name of the worksite</param>
-        public void SetWorksiteName(string worksiteName)
+        public void SelectWorksiteName(string worksiteName)
         {
             this.worksiteName = worksiteName;
             ResetFields();
@@ -317,17 +331,7 @@ namespace SakaiParser
                     }
 
                     // Worksites in dctWorksites
-
-                    if (!String.IsNullOrWhiteSpace(worksiteName))
-                    {
-                        webBrowserTask = WebBrowserTask.GoToAssignments;
-                        webBrowser.Navigate(dctWorksites[worksiteName]);
-                    }
-                    else
-                    {
-                        webBrowserTask = WebBrowserTask.Idle;
-                    }
-
+                    webBrowserTask = WebBrowserTask.Idle;
                     break;
                 case WebBrowserTask.GetMembershipLink:
 
@@ -416,12 +420,17 @@ namespace SakaiParser
                                     }
                                     if (td.GetAttribute("headers") == "num_submissions")
                                     {
-                                        HtmlElement link = td.GetElementsByTagName("a")[0];
-                                        string outerHtml = link.OuterHtml;
-                                        MatchCollection mathes = Regex.Matches(outerHtml, "window.location\\s*=\\s*('|\")(.*?)('|\")", RegexOptions.IgnoreCase);
-                                        url = mathes[0].Groups[2].Value;
+                                        HtmlElementCollection linksCount = td.GetElementsByTagName("a");
+                                        if (linksCount.Count > 0)
+                                        {
+                                            HtmlElement link = linksCount[0];
+                                            string outerHtml = link.OuterHtml;
+                                            MatchCollection mathes = Regex.Matches(outerHtml,
+                                                "window.location\\s*=\\s*('|\")(.*?)('|\")", RegexOptions.IgnoreCase);
+                                            url = mathes[0].Groups[2].Value;
 
-                                        innew = td.InnerText;
+                                            innew = td.InnerText;
+                                        }
                                     }
                                     if (td.GetAttribute("headers") == "maxgrade")
                                     {
@@ -1153,7 +1162,7 @@ namespace SakaiParser
             loginFrame.Document.GetElementById("eid").SetAttribute("value", UserName);
             loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
             loginFrame.Navigate("javascript:document.forms[0].submit()");
-            webBrowserTask = WebBrowserTask.GetMembershipLink;
+            ReadWorksitesAsync();
         }
     }
 }
