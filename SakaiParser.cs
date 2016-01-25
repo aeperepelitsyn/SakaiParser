@@ -18,6 +18,7 @@
 // version 1.13 (20150529) Added possibility to set first name and last name for specified user by its id
 // version 1.14 (20150601) Fixed issue with User tab for renaming users (Alexander Yasko) and with reloading of student information (aeperepelitsyn)
 // version 1.15 (20160123) Fixed issue with Draft Assignments, Added method ReadWorksitesAsync (aeperepelitsyn)
+// version 1.16 (20160125) Added ability to read all worksites, fixed issue with few worksites with the same name (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -136,7 +137,8 @@ namespace SakaiParser
     public enum SPExceptions
     {
         UnableToFindMembership,
-        UnableToFindLinkToUsersTab
+        UnableToFindLinkToUsersTab,
+        WorksiteNameAlreadyExist
     }
     public delegate void ExceptionDelegate(SPExceptions exception, String message);
 
@@ -196,6 +198,8 @@ namespace SakaiParser
                     message = "Unable to find Membership link"; break;
                 case SPExceptions.UnableToFindLinkToUsersTab:
                     message = "Unable to find link to Users Tab"; break;
+                case SPExceptions.WorksiteNameAlreadyExist:
+                    message = "Worksite name already exist"; break;
                 default:
                     message = "Unknown exception"; break;
             }
@@ -314,9 +318,6 @@ namespace SakaiParser
                     LogIn();
                     break;
                 case WebBrowserTask.ParseWorksites:
-
-                    dctWorksites.Clear();
-
                     HtmlElement worksiteTable = webBrowser.Document.Window.Frames[0].Document.GetElementById("currentSites");
                     HtmlElementCollection tableTDs = worksiteTable.GetElementsByTagName("td");
                     foreach (HtmlElement worksiteTD in tableTDs)
@@ -325,13 +326,50 @@ namespace SakaiParser
                         {
                             HtmlElement linkToWorksite = worksiteTD.GetElementsByTagName("a")[0];
                             string sLink = linkToWorksite.GetAttribute("href");
-
-                            dctWorksites.Add(worksiteTD.InnerText, sLink);
+                            if (dctWorksites.ContainsKey(worksiteTD.InnerText))
+                            {
+                               //SPExceptionProvider(SPExceptions.WorksiteNameAlreadyExist);
+                            }
+                            else
+                            {
+                                dctWorksites.Add(worksiteTD.InnerText, sLink);
+                            }
                         }
                     }
-
                     // Worksites in dctWorksites
-                    webBrowserTask = WebBrowserTask.Idle;
+                    bool nextPageAvailable = false;
+                    HtmlElementCollection buttonForms = webBrowser.Document.Window.Frames[0].Document.GetElementsByTagName("input");
+                    foreach (HtmlElement worksiteTD in buttonForms)
+                    {
+                        if (worksiteTD.GetAttribute("name") == "eventSubmit_doList_next")
+                        {
+                            if (worksiteTD.GetAttribute("disabled") == "False")
+                            {
+                                nextPageAvailable = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (nextPageAvailable)
+                    {
+                        webBrowserTask = WebBrowserTask.ParseWorksites;
+                        webBrowser.Navigate("javascript:window.frames[0].document.forms[4].elements[0].click()");
+                        Task asyncTask = new Task(() =>
+                        {
+                            Thread.Sleep(500);
+                        });
+
+                        asyncTask.ContinueWith((a) =>
+                        {
+                            webBrowser.Navigate(webBrowser.Url);
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask.Start();
+                    }
+                    else
+                    {
+                        webBrowserTask = WebBrowserTask.Idle;
+                    }
                     break;
                 case WebBrowserTask.GetMembershipLink:
 
@@ -343,10 +381,9 @@ namespace SakaiParser
                     {
                         SPExceptionProvider(SPExceptions.UnableToFindMembership);
                     }
-
                     webBrowserTask = WebBrowserTask.ParseWorksites;
+                    dctWorksites.Clear();
                     webBrowser.Navigate(linkToMembership);
-
                     break;
                 case WebBrowserTask.GoToAssignments:
                     // Now we are at HOME link, maybe
