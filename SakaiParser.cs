@@ -19,6 +19,7 @@
 // version 1.14 (20150601) Fixed issue with User tab for renaming users (Alexander Yasko) and with reloading of student information (aeperepelitsyn)
 // version 1.15 (20160123) Fixed issue with Draft Assignments, Added method ReadWorksitesAsync (aeperepelitsyn)
 // version 1.16 (20160125) Added ability to read all worksites, fixed issue with few worksites with the same name (moskalenkoBV)
+// version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -139,8 +140,9 @@ namespace SakaiParser
         UnableToFindMembership,
         UnableToFindLinkToUsersTab,
         WorksiteNameAlreadyExist
-    }
-    public delegate void ExceptionDelegate(SPExceptions exception, String message);
+    }                   
+    public delegate void DelegateException(SPExceptions exception, String message);
+    public delegate void DelegateWorksitesReady(String[] worksites);
 
     class SakaiParser285
     {
@@ -188,7 +190,7 @@ namespace SakaiParser
 
         bool assignmentsParsed;
 
-        public event ExceptionDelegate SPException;
+        public event DelegateException SPException;
         private void SPExceptionProvider(SPExceptions exception)
         {
             String message;
@@ -213,6 +215,14 @@ namespace SakaiParser
             }
         }
 
+        public event DelegateWorksitesReady WorksitesReady;
+        private void WorksitesReadyProvider()
+        {
+            if (WorksitesReady != null)
+            {
+                WorksitesReady(GetWorksites());
+            }
+        }
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -336,6 +346,18 @@ namespace SakaiParser
                             }
                         }
                     }
+                    //Alternative implementation:
+                    //HtmlElement worksiteTables = webBrowser.Document.Window.Frames[0].Document.GetElementById("currentSites");
+                    //HtmlElementCollection curSites = worksiteTables.GetElementsByTagName("a");
+                    //string sLink = "";
+                    //foreach (HtmlElement workSiteName in curSites)
+                    //{
+                    //    if (workSiteName.GetAttribute("target") == "_top")
+                    //    {
+                    //        sLink = workSiteName.GetAttribute("href");
+                    //        dctWorksites.Add(workSiteName.InnerText,sLink);
+                    //    }
+                    //}
                     // Worksites in dctWorksites
                     bool nextPageAvailable = false;
                     HtmlElementCollection buttonForms = webBrowser.Document.Window.Frames[0].Document.GetElementsByTagName("input");
@@ -369,6 +391,7 @@ namespace SakaiParser
                     else
                     {
                         webBrowserTask = WebBrowserTask.Idle;
+                        WorksitesReadyProvider();
                     }
                     break;
                 case WebBrowserTask.GetMembershipLink:
