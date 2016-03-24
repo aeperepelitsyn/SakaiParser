@@ -19,7 +19,8 @@
 // version 1.14 (20150601) Fixed issue with User tab for renaming users (Alexander Yasko) and with reloading of student information (aeperepelitsyn)
 // version 1.15 (20160123) Fixed issue with Draft Assignments, Added method ReadWorksitesAsync (aeperepelitsyn)
 // version 1.16 (20160125) Added ability to read all worksites, fixed issue with few worksites with the same name (moskalenkoBV)
-// version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing
+// version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing (moskalenkoBV)
+// version 1.18 (20160324) Added events WorksiteSelected, AssignmentItemsReady, StudentsInformationReady (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -119,6 +120,7 @@ namespace SakaiParser
         LogIn,
         GetMembershipLink,
         ParseWorksites,
+        ParseSelectedWorksite,
         GoToAssignments,
         GoToAdministrationWorkspaceUsersTab,
         ParseAssignments,
@@ -143,6 +145,9 @@ namespace SakaiParser
     }                   
     public delegate void DelegateException(SPExceptions exception, String message);
     public delegate void DelegateWorksitesReady(String[] worksites);
+    public delegate void DelegateWorksiteSelected(String worksiteName);
+    public delegate void DelegateAssignmentItemsReady(String[] assignmentTitles);
+    public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
 
     class SakaiParser285
     {
@@ -164,7 +169,8 @@ namespace SakaiParser
         string linkToSiteEditor;
         string linkToManageGroupsSection;
         string linkToCreateNewGroupSection;
-        string linkToAssignments;
+
+        private string linkToAssignments; // Link to Assignments page
 
         private string gradeStudentID;
         private String studentmark;
@@ -223,6 +229,34 @@ namespace SakaiParser
                 WorksitesReady(GetWorksites());
             }
         }
+
+        public event DelegateWorksiteSelected WorksiteSelected;
+        private void WorksiteSelectedProvider()
+        {
+            if (WorksiteSelected != null)
+            {
+                WorksiteSelected(worksiteName);
+            }
+        }
+
+        public event DelegateAssignmentItemsReady AssignmentItemsReady;
+        private void AssignmentItemsReadyProvider()
+        {
+            if (AssignmentItemsReady != null)
+            {
+                AssignmentItemsReady(GetAssignmentItemNames());
+            }
+        }
+
+        public event DelegateStudentsInformationReady StudentsInformationReady;
+        private void StudentsInformationReadyProvider()
+        {
+            if (StudentsInformationReady != null)
+            {
+                StudentsInformationReady(GetStudentIDs());
+            }
+        }
+        
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -296,11 +330,11 @@ namespace SakaiParser
         /// The name should be existing.
         /// </summary>
         /// <param name="worksiteName">The name of the worksite</param>
-        public void SelectWorksiteName(string worksiteName)
+        public void SelectWorksite(string worksiteName)
         {
             this.worksiteName = worksiteName;
             ResetFields();
-            webBrowserTask = WebBrowserTask.GoToAssignments;
+            webBrowserTask = WebBrowserTask.ParseSelectedWorksite;
             webBrowser.Navigate(dctWorksites[worksiteName]);
         }
 
@@ -408,7 +442,7 @@ namespace SakaiParser
                     dctWorksites.Clear();
                     webBrowser.Navigate(linkToMembership);
                     break;
-                case WebBrowserTask.GoToAssignments:
+                case WebBrowserTask.ParseSelectedWorksite:
                     // Now we are at HOME link, maybe
 
                     HtmlElementCollection links = webBrowser.Document.GetElementsByTagName("a");
@@ -430,9 +464,10 @@ namespace SakaiParser
                     //                    if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
 
                     // If it is okay, we have linkToSiteEditor
-
                     webBrowserTask = WebBrowserTask.Idle;
-
+                    WorksiteSelectedProvider();
+                    break;
+                case WebBrowserTask.GoToAssignments:
                     //////////////////////////////////////////////////////////////////////////////////
                     /*webBrowserTask = WebBrowserTask.ParseAssignments;
                     webBrowser.Navigate(linkToAssignments);*/
@@ -505,6 +540,7 @@ namespace SakaiParser
                     // Assignments are supposed to be parsed
                     assignmentsParsed = true;
                     webBrowserTask = WebBrowserTask.Idle;
+                    AssignmentItemsReadyProvider();
                     break;
                 // We have all assignments. Go to LoadStudents
 
@@ -512,6 +548,7 @@ namespace SakaiParser
 
                     ParseLoadingStudents(indexOfProcessingAssignment, false);
                     webBrowserTask = WebBrowserTask.Idle;
+                    StudentsInformationReadyProvider();
                     break;
                 case WebBrowserTask.LoadStudents:
 
@@ -1089,12 +1126,18 @@ namespace SakaiParser
             return studID;
         }
 
-        public void ParseStudentsAsync()
+        /// <summary>
+        /// Parse students from assignment
+        /// </summary>
+        public void ParseStudents()
         {
-            ParseStudentsAsync(dctAssignmentItems.Keys.ToArray()[0]);
+            ParseStudents(dctAssignmentItems.Keys.ToArray()[0]);
         }
-
-        public void ParseStudentsAsync(String assignment)
+        /// <summary>
+        /// Parse students from selected assignment
+        /// </summary>
+        /// <param name="assignment"></param>
+        public void ParseStudents(String assignment)
         {
             indexOfProcessingAssignment = -1;
             String[] assignments = dctAssignmentItems.Keys.ToArray();
@@ -1200,7 +1243,7 @@ namespace SakaiParser
         /// <summary>
         /// Starts asynchronous assignment items parsing process
         /// </summary>
-        public void ParseAssignmentItemsAsync()
+        public void ParseAssignmentItems()
         {
             webBrowserTask = WebBrowserTask.ParseAssignments;
             webBrowser.Navigate(linkToAssignments);
