@@ -21,6 +21,7 @@
 // version 1.16 (20160125) Added ability to read all worksites, fixed issue with few worksites with the same name (moskalenkoBV)
 // version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing (moskalenkoBV)
 // version 1.18 (20160324) Added events WorksiteSelected, AssignmentItemsReady, StudentsInformationReady (moskalenkoBV)
+// version 1.19 (20160403) Added event TestsAndQuizzesReady and base class CourseTools for worksite elements (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -35,7 +36,21 @@ using System.Windows.Forms;
 
 namespace SakaiParser
 {
-    public class Assignment
+    public class CourseTools
+    {
+        public string Title { get; set; }
+
+        public static implicit operator String(CourseTools a)
+        {
+            return a.Title;
+        }
+
+        public override string ToString()
+        {
+            return Title;
+        }
+    }
+    public class Assignment : CourseTools
     {
         public Assignment(string title, string link, string status, string open, string due, string innew, string scale)
         {
@@ -52,24 +67,23 @@ namespace SakaiParser
         public Dictionary<string, StudentInfo> StudentInfosDictionary { get; set; }
 
         public string Link { get; set; }
-        public string Title { get; set; }
+
         public string Status { get; set; }
         public string Open { get; set; }
         public string Due { get; set; }
         public string InNew { get; set; }
         public string Scale { get; set; }
 
-        public static implicit operator String(Assignment a)
-        {
-            return a.Title;
-        }
-
-        public override string ToString()
-        {
-            return Title;
-        }
     }
 
+    public class TestsAndQuizzes : CourseTools
+    {
+        public TestsAndQuizzes(string title)
+        {
+            Title = title;
+        }
+
+    }
     public struct SubmittedFile
     {
         public string Name;
@@ -124,6 +138,7 @@ namespace SakaiParser
         GoToAssignments,
         GoToAdministrationWorkspaceUsersTab,
         ParseAssignments,
+        ParseTestsAndQuizzes,
         LoadStudents,
         ReloadStudents,
         LoadStudentAttachments,
@@ -148,6 +163,7 @@ namespace SakaiParser
     public delegate void DelegateWorksiteSelected(String worksiteName);
     public delegate void DelegateAssignmentItemsReady(String[] assignmentTitles);
     public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
+    public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
 
     class SakaiParser285
     {
@@ -163,14 +179,16 @@ namespace SakaiParser
         Dictionary<string, string> dctWorksites;
         Dictionary<string, StudentInfo> dctStudentInfos;
         Dictionary<string, Assignment> dctAssignmentItems;
+        Dictionary<string, TestsAndQuizzes> dctTestAndQuizzesItems;
 
         string worksiteName;
         string linkToMembership;
-        string linkToSiteEditor;
         string linkToManageGroupsSection;
         string linkToCreateNewGroupSection;
 
-        private string linkToAssignments; // Link to Assignments page
+        private string linkToAssignments;           // Link to Assignments page
+        private string linkToSiteEditor;            // Link to SiteEditor page
+        private string linkToTestsAndQuizzes;       // Link to TestsAndQuizzes page
 
         private string gradeStudentID;
         private String studentmark;
@@ -248,6 +266,15 @@ namespace SakaiParser
             }
         }
 
+        public event DelegateTestsAndQuizzesReady TestsAndQuizzesReady;
+        private void TestsAndQuizzesReadyProvider()
+        {
+            if (TestsAndQuizzesReady != null)
+            {
+                TestsAndQuizzesReady(GetPublishedTestNames());
+            }
+        }
+
         public event DelegateStudentsInformationReady StudentsInformationReady;
         private void StudentsInformationReadyProvider()
         {
@@ -273,6 +300,7 @@ namespace SakaiParser
             dctWorksites = new Dictionary<string, string>();
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
+            dctTestAndQuizzesItems = new Dictionary<string, TestsAndQuizzes>();
             worksiteName = "";
             linkToMembership = "";
             SPException = null;
@@ -444,26 +472,33 @@ namespace SakaiParser
                     break;
                 case WebBrowserTask.ParseSelectedWorksite:
                     // Now we are at HOME link, maybe
-
+                    // Now we are at Home of the WorkSite
+                    linkToAssignments = "";
+                    linkToSiteEditor = "";
+                    linkToTestsAndQuizzes = "";
                     HtmlElementCollection links = webBrowser.Document.GetElementsByTagName("a");
                     foreach (HtmlElement link in links)
+                    {
                         if (link.GetAttribute("className") == "icon-sakai-assignment-grades")
+                        {
                             linkToAssignments = link.GetAttribute("href");
-
+                        }
+                        else if (link.GetAttribute("className") == "icon-sakai-siteinfo")
+                        {
+                            // Parsing site editor link.
+                            linkToSiteEditor = link.GetAttribute("href");
+                        }
+                        else if (link.GetAttribute("className") == "icon-sakai-samigo")
+                        {
+                            linkToTestsAndQuizzes = link.GetAttribute("href");
+                        }
+                    }
                     if (linkToAssignments == "") throw new Exception("Unable to find Assignments link");
 
-                    // Now we are at Home of the WorkSite
-                    // Parsing site editor link.
-
-                    linkToSiteEditor = "";
-                    links = webBrowser.Document.GetElementsByTagName("a");
-                    foreach (HtmlElement link in links)
-                        if (link.GetAttribute("className") == "icon-sakai-siteinfo")
-                            linkToSiteEditor = link.GetAttribute("href");
-
-                    //                    if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
+                    // if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
 
                     // If it is okay, we have linkToSiteEditor
+
                     webBrowserTask = WebBrowserTask.Idle;
                     WorksiteSelectedProvider();
                     break;
@@ -543,7 +578,22 @@ namespace SakaiParser
                     AssignmentItemsReadyProvider();
                     break;
                 // We have all assignments. Go to LoadStudents
-
+                
+                case WebBrowserTask.ParseTestsAndQuizzes:
+                    int ii = 0;
+                    HtmlElement form = webBrowser.Document.Window.Frames[1].Document.GetElementById("authorIndexForm");
+                    HtmlElementCollection testsName = form.Document.GetElementsByTagName("td");
+                    foreach (HtmlElement testName in testsName)
+                    {
+                        if (testName.GetAttribute("className") == "titlePub")
+                        {
+                            dctTestAndQuizzesItems.Add(ii.ToString(),new TestsAndQuizzes(testName.InnerText));
+                            ii++;
+                        }
+                    }
+                    webBrowserTask = WebBrowserTask.Idle;
+                    TestsAndQuizzesReadyProvider();
+                    break;
                 case WebBrowserTask.ReloadStudents:
 
                     ParseLoadingStudents(indexOfProcessingAssignment, false);
@@ -1197,7 +1247,10 @@ namespace SakaiParser
         {
             return dctAssignmentItems.Values.Select(x => x.Title).ToArray();
         }
-
+        public string[] GetPublishedTestNames()
+        {
+            return dctTestAndQuizzesItems.Values.Select(x => x.Title).ToArray();
+        }
         public void GradeStudent(string assignmentName, string studentID, String mark)
         {
             Assignment assignment = dctAssignmentItems[assignmentName];
@@ -1245,10 +1298,23 @@ namespace SakaiParser
         /// </summary>
         public void ParseAssignmentItems()
         {
-            webBrowserTask = WebBrowserTask.ParseAssignments;
-            webBrowser.Navigate(linkToAssignments);
+            if (linkToAssignments != String.Empty)
+            {
+                webBrowserTask = WebBrowserTask.ParseAssignments;
+                webBrowser.Navigate(linkToAssignments);
+            }
         }
-
+        /// <summary>
+        /// Starts asynchronous assignment items parsing process
+        /// </summary>
+        public void ParseTestsAndQuizzesItems()
+        {
+            if (linkToTestsAndQuizzes != String.Empty)
+            {
+                webBrowserTask = WebBrowserTask.ParseTestsAndQuizzes;
+                webBrowser.Navigate(linkToTestsAndQuizzes);
+            }
+        }
         public String[] GetWorksites()
         {
             return dctWorksites.Keys.ToArray();
