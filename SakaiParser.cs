@@ -22,6 +22,7 @@
 // version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing (moskalenkoBV)
 // version 1.18 (20160324) Added events WorksiteSelected, AssignmentItemsReady, StudentsInformationReady (moskalenkoBV)
 // version 1.19 (20160403) Added event TestsAndQuizzesReady and base class CourseTools for worksite elements (moskalenkoBV)
+// version 1.20 (20160409) Added event StudentGraded that provide grade message (moskalenkoBV) and new related exception messages (vystorobets)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -148,6 +149,7 @@ namespace SakaiParser
         ContinueStudentRenaming,
         SelectStudentToGrade,
         GradeStudent,
+        GradeResultMessage,
         AddNewGroup,
         SetNewFirstNameAndLastName
     }
@@ -156,7 +158,9 @@ namespace SakaiParser
     {
         UnableToFindMembership,
         UnableToFindLinkToUsersTab,
-        WorksiteNameAlreadyExist
+        WorksiteNameAlreadyExist,
+        GradeFrameWasntFound,
+        GradeMessageWasntFound
     }                   
     public delegate void DelegateException(SPExceptions exception, String message);
     public delegate void DelegateWorksitesReady(String[] worksites);
@@ -164,6 +168,7 @@ namespace SakaiParser
     public delegate void DelegateAssignmentItemsReady(String[] assignmentTitles);
     public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
     public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
+    public delegate void DelegateStudentGraded(bool success, String releaseMessage);
 
     class SakaiParser285
     {
@@ -226,6 +231,10 @@ namespace SakaiParser
                     message = "Unable to find link to Users Tab"; break;
                 case SPExceptions.WorksiteNameAlreadyExist:
                     message = "Worksite name already exist"; break;
+                case SPExceptions.GradeFrameWasntFound:
+                    message = "Error! Frame wasn't found"; break;
+                case SPExceptions.GradeMessageWasntFound:
+                    message = "Error! Message wasn't found"; break;
                 default:
                     message = "Unknown exception"; break;
             }
@@ -283,7 +292,14 @@ namespace SakaiParser
                 StudentsInformationReady(GetStudentIDs());
             }
         }
-        
+        public event DelegateStudentGraded StudentGraded;
+        private void StudentGradedProvider(bool success, String releaseMessage)
+        {
+            if (StudentGraded != null)
+            {
+                StudentGraded(success, releaseMessage);
+            }
+        }
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -847,21 +863,57 @@ namespace SakaiParser
                     break;
 
                 case WebBrowserTask.GradeStudent:
-
                     webBrowser.Document.Window.Frames[1].Document.GetElementById("grade").SetAttribute("value", studentmark);
-
                     HtmlElementCollection processBtn = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
                     foreach (HtmlElement element in processBtn)
                     {
                         if (element.GetAttribute("name") == "return")
                         {
                             element.InvokeMember("CLICK");
-                            webBrowserTask = WebBrowserTask.Idle;
+                            confidentLoad = true;
                             break;
                         }
                     }
-                    webBrowserTask = WebBrowserTask.Idle;
+                    webBrowserTask = WebBrowserTask.GradeResultMessage;
                     break;
+                case WebBrowserTask.GradeResultMessage:
+                    {
+                        bool success = false;
+                        String releaseMessage = "";
+                        HtmlElementCollection bRelease = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("div");
+                        if (bRelease.Count != 0)
+                        {
+                            foreach (HtmlElement divs in bRelease)
+                            {
+                                if (divs.GetAttribute("className") == "success")
+                                {
+                                    success = true;
+                                    releaseMessage = divs.InnerText;
+                                    break;
+                                }
+                                else if (divs.GetAttribute("className") == "alertMessage")
+                                {
+                                    success = false;
+                                    releaseMessage = divs.InnerText;
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            SPExceptionProvider(SPExceptions.GradeFrameWasntFound);
+                        }
+                        webBrowserTask = WebBrowserTask.Idle;
+                        if (releaseMessage == String.Empty)
+                        {
+                            SPExceptionProvider(SPExceptions.GradeMessageWasntFound);
+                        }
+                        else
+                        {
+                            StudentGradedProvider(success, releaseMessage);
+                        }
+                        break;
+                    }
                 case WebBrowserTask.GoToAdministrationWorkspaceUsersTab:
                     {
                         HtmlElementCollection hec = webBrowser.Document.GetElementsByTagName("a");
