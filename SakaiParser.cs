@@ -23,6 +23,7 @@
 // version 1.18 (20160324) Added events WorksiteSelected, AssignmentItemsReady, StudentsInformationReady (moskalenkoBV)
 // version 1.19 (20160403) Added event TestsAndQuizzesReady and base class CourseTools for worksite elements (moskalenkoBV)
 // version 1.20 (20160409) Added event StudentGraded that provide grade message (moskalenkoBV) and new related exception messages (vystorobets)
+// version 1.21 (20160503) Added SetDelayOfTestDueDate that modifies due date of test and event DelayOfTestAssigned (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -31,6 +32,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -140,6 +142,8 @@ namespace SakaiParser
         GoToAdministrationWorkspaceUsersTab,
         ParseAssignments,
         ParseTestsAndQuizzes,
+        OpenTestAndQuizzesSettings,
+        SetTestAndQuizzesDueDate,
         LoadStudents,
         ReloadStudents,
         LoadStudentAttachments,
@@ -161,7 +165,7 @@ namespace SakaiParser
         WorksiteNameAlreadyExist,
         GradeFrameWasntFound,
         GradeMessageWasntFound
-    }                   
+    }               
     public delegate void DelegateException(SPExceptions exception, String message);
     public delegate void DelegateWorksitesReady(String[] worksites);
     public delegate void DelegateWorksiteSelected(String worksiteName);
@@ -169,6 +173,7 @@ namespace SakaiParser
     public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
     public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
     public delegate void DelegateStudentGraded(bool success, String releaseMessage);
+    public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
 
     class SakaiParser285
     {
@@ -186,6 +191,8 @@ namespace SakaiParser
         Dictionary<string, Assignment> dctAssignmentItems;
         Dictionary<string, TestsAndQuizzes> dctTestAndQuizzesItems;
 
+        Queue<WebBrowserTask> spTasks;
+
         string worksiteName;
         string linkToMembership;
         string linkToManageGroupsSection;
@@ -194,6 +201,9 @@ namespace SakaiParser
         private string linkToAssignments;           // Link to Assignments page
         private string linkToSiteEditor;            // Link to SiteEditor page
         private string linkToTestsAndQuizzes;       // Link to TestsAndQuizzes page
+
+        private String currentTestName;
+        private uint currentTestDelay;
 
         private string gradeStudentID;
         private String studentmark;
@@ -283,7 +293,14 @@ namespace SakaiParser
                 TestsAndQuizzesReady(GetPublishedTestNames());
             }
         }
-
+        public event DelegateDelayOfTestAssigned DelayOfTestAssigned;
+        private void DelayOfTestAssignedProvider()
+        {
+            if (DelayOfTestAssigned != null)
+            {
+                DelayOfTestAssigned(currentTestName, currentTestDelay);
+            }
+        }
         public event DelegateStudentsInformationReady StudentsInformationReady;
         private void StudentsInformationReadyProvider()
         {
@@ -317,6 +334,7 @@ namespace SakaiParser
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
             dctTestAndQuizzesItems = new Dictionary<string, TestsAndQuizzes>();
+            spTasks = new Queue<WebBrowserTask>();
             worksiteName = "";
             linkToMembership = "";
             SPException = null;
@@ -359,7 +377,7 @@ namespace SakaiParser
         /// <summary>
         /// Function read worksite names for current authorized user.
         /// </summary>
-        public void ReadWorksitesAsync()
+        private void ReadWorksitesAsync()
         {
             bool renavigate = (webBrowserTask == WebBrowserTask.Idle);
             webBrowserTask = WebBrowserTask.GetMembershipLink;
@@ -607,8 +625,94 @@ namespace SakaiParser
                             ii++;
                         }
                     }
+
                     webBrowserTask = WebBrowserTask.Idle;
                     TestsAndQuizzesReadyProvider();
+                    break;
+                case WebBrowserTask.OpenTestAndQuizzesSettings:
+                    Regex reginactive = new Regex("inactivePublishedSelectAction");
+                    Regex regactive = new Regex("publishedSelectAction");
+                    Regex reg1 = new Regex("inactivePublishedSelectAction[0-9]+");
+                    Regex reg2 = new Regex("publishedSelectAction[0-9]+");
+                    int numLink = 0;
+                    HtmlElement testAndQuizzesItem;
+                    HtmlElementCollection testAndQuizzesLinks = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+                    //HtmlElementCollection testAndQuizzesSelect;
+                    HtmlElementCollection testAndQuizzesOptions;
+                    String testAndQuizzesStr = "";
+                    HtmlElement testAndQuizessForm = webBrowser.Document.Window.Frames[1].Document.GetElementById("authorIndexForm");
+                    HtmlElementCollection testAndQuizzesItems = testAndQuizessForm.Document.GetElementsByTagName("td");
+                    foreach (HtmlElement item in testAndQuizzesItems)
+                    {
+                        if (item.GetAttribute("className") == "titlePub")
+                        {
+                            if (item.InnerText == currentTestName)
+                            {
+                                testAndQuizzesItem = item.Parent;
+                                testAndQuizzesItem = testAndQuizzesItem.FirstChild;
+                                testAndQuizzesItem = testAndQuizzesItem.FirstChild;
+                                testAndQuizzesOptions = testAndQuizzesItem.Children;
+                                foreach (HtmlElement option in testAndQuizzesOptions)
+                                {
+                                    if (option.GetAttribute("value").ToString() == "settings_published")
+                                    {
+                                        option.SetAttribute("selected", "selected");
+                                        if (reginactive.IsMatch(testAndQuizzesItem.Id))
+                                        {
+                                            testAndQuizzesStr = reg1.Replace(testAndQuizzesItem.Id, "inactivePublishedHiddenlink");
+                                        }
+                                        else
+                                        {
+                                            testAndQuizzesStr = reg2.Replace(testAndQuizzesItem.Id, "publishedHiddenlink");
+                                        }
+                                        foreach (HtmlElement link in testAndQuizzesLinks)
+                                        {
+                                            if (link.Id == testAndQuizzesStr)
+                                            {
+                                                webBrowser.Navigate("javascript:window.frames[1].document.links[" + numLink + "].click()");
+                                            }
+                                            else
+                                            {
+                                                numLink++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    webBrowserTask = WebBrowserTask.SetTestAndQuizzesDueDate;
+                    confidentLoad = true;
+                    break;
+                case WebBrowserTask.SetTestAndQuizzesDueDate:
+                    var culture = new CultureInfo("en-US");
+                    DateTime localDate = DateTime.Now;
+                    DateTime newdate = DateTime.Now;
+                    TimeSpan timer = new TimeSpan(0, (int)currentTestDelay, 0);
+                    newdate = newdate.Add(timer);
+                    HtmlElementCollection dates = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                    foreach (HtmlElement date in dates)
+                    {
+                        if (date.GetAttribute("id") == "assessmentSettingsAction:startDate")
+                        {
+                            date.SetAttribute("value",localDate.ToString(culture));
+                        }
+                        if (date.GetAttribute("id") == "assessmentSettingsAction:endDate")
+                        {
+                            date.SetAttribute("value", newdate.ToString(culture));
+                        }
+                    }
+                    HtmlElement testSettings = webBrowser.Document.Window.Frames[1].Document.GetElementById("assessmentSettingsAction");
+                    HtmlElementCollection testSettingsElems = testSettings.All;
+                    foreach (HtmlElement elem in testSettingsElems)
+                    {
+                        if (elem.GetAttribute("value") == "Save Settings")
+                        {
+                            elem.InvokeMember("CLICK");
+                        }
+                    }
+                    webBrowserTask = WebBrowserTask.Idle;
+                    DelayOfTestAssignedProvider();
                     break;
                 case WebBrowserTask.ReloadStudents:
 
@@ -1302,6 +1406,18 @@ namespace SakaiParser
         public string[] GetPublishedTestNames()
         {
             return dctTestAndQuizzesItems.Values.Select(x => x.Title).ToArray();
+        }
+        public void SetDelayOfTestDueDate(String testName, uint delay)
+        {
+            if (linkToTestsAndQuizzes != String.Empty)
+            {
+                currentTestDelay = delay;
+                currentTestName = testName;
+                webBrowserTask = WebBrowserTask.OpenTestAndQuizzesSettings;
+                confidentLoad = true;
+                webBrowser.Navigate(linkToTestsAndQuizzes);
+            }
+            
         }
         public void GradeStudent(string assignmentName, string studentID, String mark)
         {
