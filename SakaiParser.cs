@@ -24,6 +24,7 @@
 // version 1.19 (20160403) Added event TestsAndQuizzesReady and base class CourseTools for worksite elements (moskalenkoBV)
 // version 1.20 (20160409) Added event StudentGraded that provide grade message (moskalenkoBV) and new related exception messages (vystorobets)
 // version 1.21 (20160503) Added SetDelayOfTestDueDate that modifies due date of test and event DelayOfTestAssigned (moskalenkoBV)
+// version 1.22 (20160530) Added method AddAssignmentItem that adds new assignment item and event AddNewAssignmentItem (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -139,6 +140,9 @@ namespace SakaiParser
         ParseWorksites,
         ParseSelectedWorksite,
         GoToAssignments,
+        AddAssignmentItems,
+        CountinueAddAssignmentItems,
+        AddAssignmentItemsResultMessage,
         GoToAdministrationWorkspaceUsersTab,
         ParseAssignments,
         ParseTestsAndQuizzes,
@@ -155,7 +159,8 @@ namespace SakaiParser
         GradeStudent,
         GradeResultMessage,
         AddNewGroup,
-        SetNewFirstNameAndLastName
+        SetNewFirstNameAndLastName,
+        Waiting
     }
 
     public enum SPExceptions
@@ -174,12 +179,15 @@ namespace SakaiParser
     public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
     public delegate void DelegateStudentGraded(bool success, String releaseMessage);
     public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
+    public delegate void DelegateAddNewAssignmentItem(String message);
 
     class SakaiParser285
     {
         delegate void ConfirmDeleting();
 
         ConfirmDeleting confirmDeletingVoid;
+        ConfirmDeleting confirmInvokeAssignment;
+        ConfirmDeleting confirmAssignmentItemMessage;
 
         WebBrowser webBrowser;
 
@@ -201,6 +209,19 @@ namespace SakaiParser
         private string linkToAssignments;           // Link to Assignments page
         private string linkToSiteEditor;            // Link to SiteEditor page
         private string linkToTestsAndQuizzes;       // Link to TestsAndQuizzes page
+
+        private string AssignmentItemTitle;
+        private string AssignmentItemDecription;
+        private string AssignmentItemGrade;
+        private string AssignmentItemOpenDay;
+        private string AssignmentItemOpenMonth;
+        private string AssignmentItemOpenYear;
+        private string AssignmentItemDueDay;
+        private string AssignmentItemDueMonth;
+        private string AssignmentItemDueYear;
+        private string AssignmentItemCloseDay;
+        private string AssignmentItemCloseMonth;
+        private string AssignmentItemCloseYear;
 
         private String currentTestName;
         private uint currentTestDelay;
@@ -317,6 +338,14 @@ namespace SakaiParser
                 StudentGraded(success, releaseMessage);
             }
         }
+        public event DelegateAddNewAssignmentItem AddNewAssignmentItem;
+        private void AddNewAssignmentItemProvider(String message)
+        {
+            if (AddNewAssignmentItem != null)
+            {
+                AddNewAssignmentItem(message);
+            }
+        }
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -343,6 +372,9 @@ namespace SakaiParser
             
 
             confirmDeletingVoid = new ConfirmDeleting(InvokeGroupDeleting);
+            confirmInvokeAssignment = new ConfirmDeleting(InvokeAssignmentItemPost);
+            confirmAssignmentItemMessage = new ConfirmDeleting(GetAssignmentItemMessage);
+
         }
 
         public string InitialUrl { get; set; }
@@ -612,7 +644,195 @@ namespace SakaiParser
                     AssignmentItemsReadyProvider();
                     break;
                 // We have all assignments. Go to LoadStudents
-                
+                case WebBrowserTask.AddAssignmentItems:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    HtmlElementCollection AssignmentMenuLinks = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+                    foreach (HtmlElement AssignmentMenuLink in AssignmentMenuLinks)
+                    {
+                        if (AssignmentMenuLink.GetAttribute("title") == "Add")
+                        {
+                            AssignmentMenuLink.InvokeMember("CLICK");
+                        }
+                    }
+                    Task asyncTask1 = new Task(() =>
+                        {
+                            Thread.Sleep(1000);
+                        });
+
+                        asyncTask1.ContinueWith((a) =>
+                        {
+                            webBrowserTask = WebBrowserTask.CountinueAddAssignmentItems;
+                            confidentLoad = true;
+                            webBrowser_DocumentCompleted(webBrowser, null);
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask1.Start();
+                    break;
+                case WebBrowserTask.CountinueAddAssignmentItems:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    HtmlElementCollection asAreas = webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames[0].Document.GetElementsByTagName("body");
+                    foreach(HtmlElement asArea in asAreas)
+                    {
+                            asArea.InnerHtml = AssignmentItemDecription;
+                    }
+                    HtmlElementCollection asSelects = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("select");
+                    foreach (HtmlElement asSelect in asSelects)
+                    {
+                        if (asSelect.Id == "new_assignment_openmonth")
+                        {
+                            HtmlElementCollection openmonths = asSelect.Children;
+                            foreach (HtmlElement openmonth in openmonths)
+                            {
+                                if (openmonth.GetAttribute("value") == (AssignmentItemOpenMonth).ToString())
+                                {
+                                    openmonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_openday")
+                        {
+                            HtmlElementCollection opendays = asSelect.Children;
+                            foreach (HtmlElement openday in opendays)
+                            {
+                                if (openday.GetAttribute("value") == (AssignmentItemOpenDay).ToString())
+                                {
+                                    openday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_openyear")
+                        {
+                            HtmlElementCollection openyears = asSelect.Children;
+                            foreach (HtmlElement openyear in openyears)
+                            {
+                                if (openyear.GetAttribute("value") == (AssignmentItemOpenYear).ToString())
+                                {
+                                    openyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_duemonth")
+                        {
+                            HtmlElementCollection duemonths = asSelect.Children;
+                            foreach (HtmlElement duemonth in duemonths)
+                            {
+                                if (duemonth.GetAttribute("value") == (AssignmentItemDueMonth).ToString())
+                                {
+                                    duemonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closemonth")
+                        {
+                            HtmlElementCollection closemonths = asSelect.Children;
+                            foreach (HtmlElement closemonth in closemonths)
+                            {
+                                if (closemonth.GetAttribute("value") == (AssignmentItemDueMonth).ToString())
+                                {
+                                    closemonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_dueday")
+                        {
+                            HtmlElementCollection opendays = asSelect.Children;
+                            foreach (HtmlElement openday in opendays)
+                            {
+                                if (openday.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    openday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closeday")
+                        {
+                            HtmlElementCollection closedays = asSelect.Children;
+                            foreach (HtmlElement closeday in closedays)
+                            {
+                                if (closeday.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    closeday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_dueyear")
+                        {
+                            HtmlElementCollection dueyears = asSelect.Children;
+                            foreach (HtmlElement dueyear in dueyears)
+                            {
+                                if (dueyear.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    dueyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closeyear")
+                        {
+                            HtmlElementCollection closeyears = asSelect.Children;
+                            foreach (HtmlElement closeyear in closeyears)
+                            {
+                                if (closeyear.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    closeyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_grade_type")
+                        {
+                            HtmlElementCollection gradeTypes = asSelect.Children;
+                            foreach (HtmlElement gradeType in gradeTypes)
+                            {
+                                if (gradeType.GetAttribute("value") == "3")
+                                {
+                                    gradeType.SetAttribute("selected", "selected");
+                                }
+                            }
+                            asSelect.InvokeMember("onchange");
+                        }
+                        HtmlElementCollection txts = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                        foreach (HtmlElement asName in txts)
+                        {
+                            if (asName.GetAttribute("id") == "new_assignment_title")
+                            {
+                                asName.SetAttribute("value", AssignmentItemTitle);
+                            }
+                            if (asName.Id == "new_assignment_grade_points")
+                            {
+                                asName.SetAttribute("value", AssignmentItemGrade);
+                            }
+                        }
+                    }
+                    Task asyncTask2 = new Task(() =>
+                        {
+                            Thread.Sleep(1000);
+                        });
+
+                        asyncTask2.ContinueWith((a) =>
+                        {
+                            InvokeAssignmentItemPost();
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask2.Start();
+                    break;
+                case WebBrowserTask.AddAssignmentItemsResultMessage:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    Task asyncTask4 = new Task(() =>
+                        {
+                            Thread.Sleep(2000);
+                        });
+
+                        asyncTask4.ContinueWith((a) =>
+                        {
+
+                            GetAssignmentItemMessage();
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask4.Start();
+                        webBrowserTask = WebBrowserTask.AddAssignmentItemsResultMessage;
+                    break;
                 case WebBrowserTask.ParseTestsAndQuizzes:
                     int ii = 0;
                     HtmlElement form = webBrowser.Document.Window.Frames[1].Document.GetElementById("authorIndexForm");
@@ -745,7 +965,6 @@ namespace SakaiParser
                         // Than the programe will be in LoadStudentAttachments switch case
                     }
                     else webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
-
                     break;
                 case WebBrowserTask.LoadStudentAttachments:
                     // Indexers should be initialized before this case reached
@@ -1132,6 +1351,8 @@ namespace SakaiParser
                     }
                 case WebBrowserTask.Idle:
                     break;
+                case WebBrowserTask.Waiting:
+                    break;
                 default:
                     break;
             }
@@ -1500,6 +1721,59 @@ namespace SakaiParser
             loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
             loginFrame.Navigate("javascript:document.forms[0].submit()");
             ReadWorksitesAsync();
+        }
+        public void AddAssignmentItem(  string title, string description, string grade,
+                                        string openday, string openmonth, string openyear,
+                                        string dueday, string duemonth, string dueyear,
+                                        string closeday, string closemonth, string closeyear)
+        {
+            AssignmentItemTitle = title;
+            AssignmentItemDecription = description;
+            AssignmentItemGrade = grade;
+            AssignmentItemOpenDay = openday;
+            AssignmentItemOpenMonth = openmonth;
+            AssignmentItemOpenYear = openyear;
+            AssignmentItemDueDay = dueday;
+            AssignmentItemDueMonth = duemonth;
+            AssignmentItemDueYear = dueyear;
+            AssignmentItemCloseDay = closeday;
+            AssignmentItemCloseMonth = closemonth;
+            AssignmentItemCloseYear = closeyear;
+            webBrowserTask = WebBrowserTask.AddAssignmentItems;
+            webBrowser.Navigate(linkToAssignments);
+        }
+        private void InvokeAssignmentItemPost()
+        {
+            webBrowserTask = WebBrowserTask.Waiting;
+            HtmlElementCollection asPosts = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+            foreach (HtmlElement asPost in asPosts)
+            {
+                if (asPost.GetAttribute("name") == "post")
+                {
+                    asPost.InvokeMember("CLICK");
+                }
+            }
+            confidentLoad = true;
+            webBrowserTask = WebBrowserTask.AddAssignmentItemsResultMessage;
+        }
+        private void GetAssignmentItemMessage()
+        {
+            String message = "";
+            HtmlElementCollection Release = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("div");
+            foreach (HtmlElement divs in Release)
+            {
+                if (divs.GetAttribute("className") == "alertMessage")
+                {
+                    message = divs.InnerText;
+                    break;
+                }
+                else
+                {
+                    message = String.Empty;
+                }
+            }
+            webBrowserTask = WebBrowserTask.Idle;
+            AddNewAssignmentItemProvider(message);
         }
     }
 }
