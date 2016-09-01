@@ -19,6 +19,12 @@
 // version 1.14 (20150601) Fixed issue with User tab for renaming users (Alexander Yasko) and with reloading of student information (aeperepelitsyn)
 // version 1.15 (20160123) Fixed issue with Draft Assignments, Added method ReadWorksitesAsync (aeperepelitsyn)
 // version 1.16 (20160125) Added ability to read all worksites, fixed issue with few worksites with the same name (moskalenkoBV)
+// version 1.17 (20160322) Added event WorksitesReady for providing of ability to handle end of worksites parsing (moskalenkoBV)
+// version 1.18 (20160324) Added events WorksiteSelected, AssignmentItemsReady, StudentsInformationReady (moskalenkoBV)
+// version 1.19 (20160403) Added event TestsAndQuizzesReady and base class CourseTools for worksite elements (moskalenkoBV)
+// version 1.20 (20160409) Added event StudentGraded that provide grade message (moskalenkoBV) and new related exception messages (vystorobets)
+// version 1.21 (20160503) Added SetDelayOfTestDueDate that modifies due date of test and event DelayOfTestAssigned (moskalenkoBV)
+// version 1.22 (20160530) Added method AddAssignmentItem that adds new assignment item and event AddNewAssignmentItem (moskalenkoBV)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -27,13 +33,28 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace SakaiParser
 {
-    public class Assignment
+    public class CourseTools
+    {
+        public string Title { get; set; }
+
+        public static implicit operator String(CourseTools a)
+        {
+            return a.Title;
+        }
+
+        public override string ToString()
+        {
+            return Title;
+        }
+    }
+    public class Assignment : CourseTools
     {
         public Assignment(string title, string link, string status, string open, string due, string innew, string scale)
         {
@@ -50,24 +71,23 @@ namespace SakaiParser
         public Dictionary<string, StudentInfo> StudentInfosDictionary { get; set; }
 
         public string Link { get; set; }
-        public string Title { get; set; }
+
         public string Status { get; set; }
         public string Open { get; set; }
         public string Due { get; set; }
         public string InNew { get; set; }
         public string Scale { get; set; }
 
-        public static implicit operator String(Assignment a)
-        {
-            return a.Title;
-        }
-
-        public override string ToString()
-        {
-            return Title;
-        }
     }
 
+    public class TestsAndQuizzes : CourseTools
+    {
+        public TestsAndQuizzes(string title)
+        {
+            Title = title;
+        }
+
+    }
     public struct SubmittedFile
     {
         public string Name;
@@ -118,9 +138,16 @@ namespace SakaiParser
         LogIn,
         GetMembershipLink,
         ParseWorksites,
+        ParseSelectedWorksite,
         GoToAssignments,
+        AddAssignmentItems,
+        CountinueAddAssignmentItems,
+        AddAssignmentItemsResultMessage,
         GoToAdministrationWorkspaceUsersTab,
         ParseAssignments,
+        ParseTestsAndQuizzes,
+        OpenTestAndQuizzesSettings,
+        SetTestAndQuizzesDueDate,
         LoadStudents,
         ReloadStudents,
         LoadStudentAttachments,
@@ -130,23 +157,37 @@ namespace SakaiParser
         ContinueStudentRenaming,
         SelectStudentToGrade,
         GradeStudent,
+        GradeResultMessage,
         AddNewGroup,
-        SetNewFirstNameAndLastName
+        SetNewFirstNameAndLastName,
+        Waiting
     }
 
     public enum SPExceptions
     {
         UnableToFindMembership,
         UnableToFindLinkToUsersTab,
-        WorksiteNameAlreadyExist
-    }
-    public delegate void ExceptionDelegate(SPExceptions exception, String message);
+        WorksiteNameAlreadyExist,
+        GradeFrameWasntFound,
+        GradeMessageWasntFound
+    }               
+    public delegate void DelegateException(SPExceptions exception, String message);
+    public delegate void DelegateWorksitesReady(String[] worksites);
+    public delegate void DelegateWorksiteSelected(String worksiteName);
+    public delegate void DelegateAssignmentItemsReady(String[] assignmentTitles);
+    public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
+    public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
+    public delegate void DelegateStudentGraded(bool success, String releaseMessage);
+    public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
+    public delegate void DelegateAddNewAssignmentItem(String message);
 
     class SakaiParser285
     {
         delegate void ConfirmDeleting();
 
         ConfirmDeleting confirmDeletingVoid;
+        ConfirmDeleting confirmInvokeAssignment;
+        ConfirmDeleting confirmAssignmentItemMessage;
 
         WebBrowser webBrowser;
 
@@ -156,13 +197,34 @@ namespace SakaiParser
         Dictionary<string, string> dctWorksites;
         Dictionary<string, StudentInfo> dctStudentInfos;
         Dictionary<string, Assignment> dctAssignmentItems;
+        Dictionary<string, TestsAndQuizzes> dctTestAndQuizzesItems;
+
+        Queue<WebBrowserTask> spTasks;
 
         string worksiteName;
         string linkToMembership;
-        string linkToSiteEditor;
         string linkToManageGroupsSection;
         string linkToCreateNewGroupSection;
-        string linkToAssignments;
+
+        private string linkToAssignments;           // Link to Assignments page
+        private string linkToSiteEditor;            // Link to SiteEditor page
+        private string linkToTestsAndQuizzes;       // Link to TestsAndQuizzes page
+
+        private string AssignmentItemTitle;
+        private string AssignmentItemDecription;
+        private string AssignmentItemGrade;
+        private string AssignmentItemOpenDay;
+        private string AssignmentItemOpenMonth;
+        private string AssignmentItemOpenYear;
+        private string AssignmentItemDueDay;
+        private string AssignmentItemDueMonth;
+        private string AssignmentItemDueYear;
+        private string AssignmentItemCloseDay;
+        private string AssignmentItemCloseMonth;
+        private string AssignmentItemCloseYear;
+
+        private String currentTestName;
+        private uint currentTestDelay;
 
         private string gradeStudentID;
         private String studentmark;
@@ -188,7 +250,7 @@ namespace SakaiParser
 
         bool assignmentsParsed;
 
-        public event ExceptionDelegate SPException;
+        public event DelegateException SPException;
         private void SPExceptionProvider(SPExceptions exception)
         {
             String message;
@@ -200,6 +262,10 @@ namespace SakaiParser
                     message = "Unable to find link to Users Tab"; break;
                 case SPExceptions.WorksiteNameAlreadyExist:
                     message = "Worksite name already exist"; break;
+                case SPExceptions.GradeFrameWasntFound:
+                    message = "Error! Frame wasn't found"; break;
+                case SPExceptions.GradeMessageWasntFound:
+                    message = "Error! Message wasn't found"; break;
                 default:
                     message = "Unknown exception"; break;
             }
@@ -213,6 +279,73 @@ namespace SakaiParser
             }
         }
 
+        public event DelegateWorksitesReady WorksitesReady;
+        private void WorksitesReadyProvider()
+        {
+            if (WorksitesReady != null)
+            {
+                WorksitesReady(GetWorksites());
+            }
+        }
+
+        public event DelegateWorksiteSelected WorksiteSelected;
+        private void WorksiteSelectedProvider()
+        {
+            if (WorksiteSelected != null)
+            {
+                WorksiteSelected(worksiteName);
+            }
+        }
+
+        public event DelegateAssignmentItemsReady AssignmentItemsReady;
+        private void AssignmentItemsReadyProvider()
+        {
+            if (AssignmentItemsReady != null)
+            {
+                AssignmentItemsReady(GetAssignmentItemNames());
+            }
+        }
+
+        public event DelegateTestsAndQuizzesReady TestsAndQuizzesReady;
+        private void TestsAndQuizzesReadyProvider()
+        {
+            if (TestsAndQuizzesReady != null)
+            {
+                TestsAndQuizzesReady(GetPublishedTestNames());
+            }
+        }
+        public event DelegateDelayOfTestAssigned DelayOfTestAssigned;
+        private void DelayOfTestAssignedProvider()
+        {
+            if (DelayOfTestAssigned != null)
+            {
+                DelayOfTestAssigned(currentTestName, currentTestDelay);
+            }
+        }
+        public event DelegateStudentsInformationReady StudentsInformationReady;
+        private void StudentsInformationReadyProvider()
+        {
+            if (StudentsInformationReady != null)
+            {
+                StudentsInformationReady(GetStudentIDs());
+            }
+        }
+        public event DelegateStudentGraded StudentGraded;
+        private void StudentGradedProvider(bool success, String releaseMessage)
+        {
+            if (StudentGraded != null)
+            {
+                StudentGraded(success, releaseMessage);
+            }
+        }
+        public event DelegateAddNewAssignmentItem AddNewAssignmentItem;
+        private void AddNewAssignmentItemProvider(String message)
+        {
+            if (AddNewAssignmentItem != null)
+            {
+                AddNewAssignmentItem(message);
+            }
+        }
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -229,6 +362,8 @@ namespace SakaiParser
             dctWorksites = new Dictionary<string, string>();
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
+            dctTestAndQuizzesItems = new Dictionary<string, TestsAndQuizzes>();
+            spTasks = new Queue<WebBrowserTask>();
             worksiteName = "";
             linkToMembership = "";
             SPException = null;
@@ -237,6 +372,9 @@ namespace SakaiParser
             
 
             confirmDeletingVoid = new ConfirmDeleting(InvokeGroupDeleting);
+            confirmInvokeAssignment = new ConfirmDeleting(InvokeAssignmentItemPost);
+            confirmAssignmentItemMessage = new ConfirmDeleting(GetAssignmentItemMessage);
+
         }
 
         public string InitialUrl { get; set; }
@@ -271,7 +409,7 @@ namespace SakaiParser
         /// <summary>
         /// Function read worksite names for current authorized user.
         /// </summary>
-        public void ReadWorksitesAsync()
+        private void ReadWorksitesAsync()
         {
             bool renavigate = (webBrowserTask == WebBrowserTask.Idle);
             webBrowserTask = WebBrowserTask.GetMembershipLink;
@@ -286,11 +424,11 @@ namespace SakaiParser
         /// The name should be existing.
         /// </summary>
         /// <param name="worksiteName">The name of the worksite</param>
-        public void SelectWorksiteName(string worksiteName)
+        public void SelectWorksite(string worksiteName)
         {
             this.worksiteName = worksiteName;
             ResetFields();
-            webBrowserTask = WebBrowserTask.GoToAssignments;
+            webBrowserTask = WebBrowserTask.ParseSelectedWorksite;
             webBrowser.Navigate(dctWorksites[worksiteName]);
         }
 
@@ -336,6 +474,18 @@ namespace SakaiParser
                             }
                         }
                     }
+                    //Alternative implementation:
+                    //HtmlElement worksiteTables = webBrowser.Document.Window.Frames[0].Document.GetElementById("currentSites");
+                    //HtmlElementCollection curSites = worksiteTables.GetElementsByTagName("a");
+                    //string sLink = "";
+                    //foreach (HtmlElement workSiteName in curSites)
+                    //{
+                    //    if (workSiteName.GetAttribute("target") == "_top")
+                    //    {
+                    //        sLink = workSiteName.GetAttribute("href");
+                    //        dctWorksites.Add(workSiteName.InnerText,sLink);
+                    //    }
+                    //}
                     // Worksites in dctWorksites
                     bool nextPageAvailable = false;
                     HtmlElementCollection buttonForms = webBrowser.Document.Window.Frames[0].Document.GetElementsByTagName("input");
@@ -369,6 +519,7 @@ namespace SakaiParser
                     else
                     {
                         webBrowserTask = WebBrowserTask.Idle;
+                        WorksitesReadyProvider();
                     }
                     break;
                 case WebBrowserTask.GetMembershipLink:
@@ -385,31 +536,39 @@ namespace SakaiParser
                     dctWorksites.Clear();
                     webBrowser.Navigate(linkToMembership);
                     break;
-                case WebBrowserTask.GoToAssignments:
+                case WebBrowserTask.ParseSelectedWorksite:
                     // Now we are at HOME link, maybe
-
+                    // Now we are at Home of the WorkSite
+                    linkToAssignments = "";
+                    linkToSiteEditor = "";
+                    linkToTestsAndQuizzes = "";
                     HtmlElementCollection links = webBrowser.Document.GetElementsByTagName("a");
                     foreach (HtmlElement link in links)
+                    {
                         if (link.GetAttribute("className") == "icon-sakai-assignment-grades")
+                        {
                             linkToAssignments = link.GetAttribute("href");
-
+                        }
+                        else if (link.GetAttribute("className") == "icon-sakai-siteinfo")
+                        {
+                            // Parsing site editor link.
+                            linkToSiteEditor = link.GetAttribute("href");
+                        }
+                        else if (link.GetAttribute("className") == "icon-sakai-samigo")
+                        {
+                            linkToTestsAndQuizzes = link.GetAttribute("href");
+                        }
+                    }
                     if (linkToAssignments == "") throw new Exception("Unable to find Assignments link");
 
-                    // Now we are at Home of the WorkSite
-                    // Parsing site editor link.
-
-                    linkToSiteEditor = "";
-                    links = webBrowser.Document.GetElementsByTagName("a");
-                    foreach (HtmlElement link in links)
-                        if (link.GetAttribute("className") == "icon-sakai-siteinfo")
-                            linkToSiteEditor = link.GetAttribute("href");
-
-                    //                    if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
+                    // if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
 
                     // If it is okay, we have linkToSiteEditor
 
                     webBrowserTask = WebBrowserTask.Idle;
-
+                    WorksiteSelectedProvider();
+                    break;
+                case WebBrowserTask.GoToAssignments:
                     //////////////////////////////////////////////////////////////////////////////////
                     /*webBrowserTask = WebBrowserTask.ParseAssignments;
                     webBrowser.Navigate(linkToAssignments);*/
@@ -482,13 +641,304 @@ namespace SakaiParser
                     // Assignments are supposed to be parsed
                     assignmentsParsed = true;
                     webBrowserTask = WebBrowserTask.Idle;
+                    AssignmentItemsReadyProvider();
                     break;
                 // We have all assignments. Go to LoadStudents
+                case WebBrowserTask.AddAssignmentItems:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    HtmlElementCollection AssignmentMenuLinks = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+                    foreach (HtmlElement AssignmentMenuLink in AssignmentMenuLinks)
+                    {
+                        if (AssignmentMenuLink.GetAttribute("title") == "Add")
+                        {
+                            AssignmentMenuLink.InvokeMember("CLICK");
+                        }
+                    }
+                    Task asyncTask1 = new Task(() =>
+                        {
+                            Thread.Sleep(1000);
+                        });
 
+                        asyncTask1.ContinueWith((a) =>
+                        {
+                            webBrowserTask = WebBrowserTask.CountinueAddAssignmentItems;
+                            confidentLoad = true;
+                            webBrowser_DocumentCompleted(webBrowser, null);
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask1.Start();
+                    break;
+                case WebBrowserTask.CountinueAddAssignmentItems:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    HtmlElementCollection asAreas = webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames[0].Document.GetElementsByTagName("body");
+                    foreach(HtmlElement asArea in asAreas)
+                    {
+                            asArea.InnerHtml = AssignmentItemDecription;
+                    }
+                    HtmlElementCollection asSelects = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("select");
+                    foreach (HtmlElement asSelect in asSelects)
+                    {
+                        if (asSelect.Id == "new_assignment_openmonth")
+                        {
+                            HtmlElementCollection openmonths = asSelect.Children;
+                            foreach (HtmlElement openmonth in openmonths)
+                            {
+                                if (openmonth.GetAttribute("value") == (AssignmentItemOpenMonth).ToString())
+                                {
+                                    openmonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_openday")
+                        {
+                            HtmlElementCollection opendays = asSelect.Children;
+                            foreach (HtmlElement openday in opendays)
+                            {
+                                if (openday.GetAttribute("value") == (AssignmentItemOpenDay).ToString())
+                                {
+                                    openday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_openyear")
+                        {
+                            HtmlElementCollection openyears = asSelect.Children;
+                            foreach (HtmlElement openyear in openyears)
+                            {
+                                if (openyear.GetAttribute("value") == (AssignmentItemOpenYear).ToString())
+                                {
+                                    openyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_duemonth")
+                        {
+                            HtmlElementCollection duemonths = asSelect.Children;
+                            foreach (HtmlElement duemonth in duemonths)
+                            {
+                                if (duemonth.GetAttribute("value") == (AssignmentItemDueMonth).ToString())
+                                {
+                                    duemonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closemonth")
+                        {
+                            HtmlElementCollection closemonths = asSelect.Children;
+                            foreach (HtmlElement closemonth in closemonths)
+                            {
+                                if (closemonth.GetAttribute("value") == (AssignmentItemDueMonth).ToString())
+                                {
+                                    closemonth.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_dueday")
+                        {
+                            HtmlElementCollection opendays = asSelect.Children;
+                            foreach (HtmlElement openday in opendays)
+                            {
+                                if (openday.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    openday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closeday")
+                        {
+                            HtmlElementCollection closedays = asSelect.Children;
+                            foreach (HtmlElement closeday in closedays)
+                            {
+                                if (closeday.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    closeday.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_dueyear")
+                        {
+                            HtmlElementCollection dueyears = asSelect.Children;
+                            foreach (HtmlElement dueyear in dueyears)
+                            {
+                                if (dueyear.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    dueyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_closeyear")
+                        {
+                            HtmlElementCollection closeyears = asSelect.Children;
+                            foreach (HtmlElement closeyear in closeyears)
+                            {
+                                if (closeyear.GetAttribute("value") == (AssignmentItemDueYear).ToString())
+                                {
+                                    closeyear.SetAttribute("selected", "selected");
+                                }
+                            }
+                        }
+                        if (asSelect.Id == "new_assignment_grade_type")
+                        {
+                            HtmlElementCollection gradeTypes = asSelect.Children;
+                            foreach (HtmlElement gradeType in gradeTypes)
+                            {
+                                if (gradeType.GetAttribute("value") == "3")
+                                {
+                                    gradeType.SetAttribute("selected", "selected");
+                                }
+                            }
+                            asSelect.InvokeMember("onchange");
+                        }
+                        HtmlElementCollection txts = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                        foreach (HtmlElement asName in txts)
+                        {
+                            if (asName.GetAttribute("id") == "new_assignment_title")
+                            {
+                                asName.SetAttribute("value", AssignmentItemTitle);
+                            }
+                            if (asName.Id == "new_assignment_grade_points")
+                            {
+                                asName.SetAttribute("value", AssignmentItemGrade);
+                            }
+                        }
+                    }
+                    Task asyncTask2 = new Task(() =>
+                        {
+                            Thread.Sleep(1000);
+                        });
+
+                        asyncTask2.ContinueWith((a) =>
+                        {
+                            InvokeAssignmentItemPost();
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask2.Start();
+                    break;
+                case WebBrowserTask.AddAssignmentItemsResultMessage:
+                    webBrowserTask = WebBrowserTask.Waiting;
+                    Task asyncTask4 = new Task(() =>
+                        {
+                            Thread.Sleep(2000);
+                        });
+
+                        asyncTask4.ContinueWith((a) =>
+                        {
+
+                            GetAssignmentItemMessage();
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask4.Start();
+                        webBrowserTask = WebBrowserTask.AddAssignmentItemsResultMessage;
+                    break;
+                case WebBrowserTask.ParseTestsAndQuizzes:
+                    int ii = 0;
+                    HtmlElement form = webBrowser.Document.Window.Frames[1].Document.GetElementById("authorIndexForm");
+                    HtmlElementCollection testsName = form.Document.GetElementsByTagName("td");
+                    foreach (HtmlElement testName in testsName)
+                    {
+                        if (testName.GetAttribute("className") == "titlePub")
+                        {
+                            dctTestAndQuizzesItems.Add(ii.ToString(),new TestsAndQuizzes(testName.InnerText));
+                            ii++;
+                        }
+                    }
+
+                    webBrowserTask = WebBrowserTask.Idle;
+                    TestsAndQuizzesReadyProvider();
+                    break;
+                case WebBrowserTask.OpenTestAndQuizzesSettings:
+                    Regex reginactive = new Regex("inactivePublishedSelectAction");
+                    Regex regactive = new Regex("publishedSelectAction");
+                    Regex reg1 = new Regex("inactivePublishedSelectAction[0-9]+");
+                    Regex reg2 = new Regex("publishedSelectAction[0-9]+");
+                    int numLink = 0;
+                    HtmlElement testAndQuizzesItem;
+                    HtmlElementCollection testAndQuizzesLinks = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+                    //HtmlElementCollection testAndQuizzesSelect;
+                    HtmlElementCollection testAndQuizzesOptions;
+                    String testAndQuizzesStr = "";
+                    HtmlElement testAndQuizessForm = webBrowser.Document.Window.Frames[1].Document.GetElementById("authorIndexForm");
+                    HtmlElementCollection testAndQuizzesItems = testAndQuizessForm.Document.GetElementsByTagName("td");
+                    foreach (HtmlElement item in testAndQuizzesItems)
+                    {
+                        if (item.GetAttribute("className") == "titlePub")
+                        {
+                            if (item.InnerText == currentTestName)
+                            {
+                                testAndQuizzesItem = item.Parent;
+                                testAndQuizzesItem = testAndQuizzesItem.FirstChild;
+                                testAndQuizzesItem = testAndQuizzesItem.FirstChild;
+                                testAndQuizzesOptions = testAndQuizzesItem.Children;
+                                foreach (HtmlElement option in testAndQuizzesOptions)
+                                {
+                                    if (option.GetAttribute("value").ToString() == "settings_published")
+                                    {
+                                        option.SetAttribute("selected", "selected");
+                                        if (reginactive.IsMatch(testAndQuizzesItem.Id))
+                                        {
+                                            testAndQuizzesStr = reg1.Replace(testAndQuizzesItem.Id, "inactivePublishedHiddenlink");
+                                        }
+                                        else
+                                        {
+                                            testAndQuizzesStr = reg2.Replace(testAndQuizzesItem.Id, "publishedHiddenlink");
+                                        }
+                                        foreach (HtmlElement link in testAndQuizzesLinks)
+                                        {
+                                            if (link.Id == testAndQuizzesStr)
+                                            {
+                                                webBrowser.Navigate("javascript:window.frames[1].document.links[" + numLink + "].click()");
+                                            }
+                                            else
+                                            {
+                                                numLink++;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    webBrowserTask = WebBrowserTask.SetTestAndQuizzesDueDate;
+                    confidentLoad = true;
+                    break;
+                case WebBrowserTask.SetTestAndQuizzesDueDate:
+                    var culture = new CultureInfo("en-US");
+                    DateTime localDate = DateTime.Now;
+                    DateTime newdate = DateTime.Now;
+                    TimeSpan timer = new TimeSpan(0, (int)currentTestDelay, 0);
+                    newdate = newdate.Add(timer);
+                    HtmlElementCollection dates = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                    foreach (HtmlElement date in dates)
+                    {
+                        if (date.GetAttribute("id") == "assessmentSettingsAction:startDate")
+                        {
+                            date.SetAttribute("value",localDate.ToString(culture));
+                        }
+                        if (date.GetAttribute("id") == "assessmentSettingsAction:endDate")
+                        {
+                            date.SetAttribute("value", newdate.ToString(culture));
+                        }
+                    }
+                    HtmlElement testSettings = webBrowser.Document.Window.Frames[1].Document.GetElementById("assessmentSettingsAction");
+                    HtmlElementCollection testSettingsElems = testSettings.All;
+                    foreach (HtmlElement elem in testSettingsElems)
+                    {
+                        if (elem.GetAttribute("value") == "Save Settings")
+                        {
+                            elem.InvokeMember("CLICK");
+                        }
+                    }
+                    webBrowserTask = WebBrowserTask.Idle;
+                    DelayOfTestAssignedProvider();
+                    break;
                 case WebBrowserTask.ReloadStudents:
 
                     ParseLoadingStudents(indexOfProcessingAssignment, false);
                     webBrowserTask = WebBrowserTask.Idle;
+                    StudentsInformationReadyProvider();
                     break;
                 case WebBrowserTask.LoadStudents:
 
@@ -515,7 +965,6 @@ namespace SakaiParser
                         // Than the programe will be in LoadStudentAttachments switch case
                     }
                     else webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.Link);
-
                     break;
                 case WebBrowserTask.LoadStudentAttachments:
                     // Indexers should be initialized before this case reached
@@ -737,21 +1186,57 @@ namespace SakaiParser
                     break;
 
                 case WebBrowserTask.GradeStudent:
-
                     webBrowser.Document.Window.Frames[1].Document.GetElementById("grade").SetAttribute("value", studentmark);
-
                     HtmlElementCollection processBtn = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
                     foreach (HtmlElement element in processBtn)
                     {
                         if (element.GetAttribute("name") == "return")
                         {
                             element.InvokeMember("CLICK");
-                            webBrowserTask = WebBrowserTask.Idle;
+                            confidentLoad = true;
                             break;
                         }
                     }
-                    webBrowserTask = WebBrowserTask.Idle;
+                    webBrowserTask = WebBrowserTask.GradeResultMessage;
                     break;
+                case WebBrowserTask.GradeResultMessage:
+                    {
+                        bool success = false;
+                        String releaseMessage = "";
+                        HtmlElementCollection bRelease = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("div");
+                        if (bRelease.Count != 0)
+                        {
+                            foreach (HtmlElement divs in bRelease)
+                            {
+                                if (divs.GetAttribute("className") == "success")
+                                {
+                                    success = true;
+                                    releaseMessage = divs.InnerText;
+                                    break;
+                                }
+                                else if (divs.GetAttribute("className") == "alertMessage")
+                                {
+                                    success = false;
+                                    releaseMessage = divs.InnerText;
+                                    break;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            SPExceptionProvider(SPExceptions.GradeFrameWasntFound);
+                        }
+                        webBrowserTask = WebBrowserTask.Idle;
+                        if (releaseMessage == String.Empty)
+                        {
+                            SPExceptionProvider(SPExceptions.GradeMessageWasntFound);
+                        }
+                        else
+                        {
+                            StudentGradedProvider(success, releaseMessage);
+                        }
+                        break;
+                    }
                 case WebBrowserTask.GoToAdministrationWorkspaceUsersTab:
                     {
                         HtmlElementCollection hec = webBrowser.Document.GetElementsByTagName("a");
@@ -865,6 +1350,8 @@ namespace SakaiParser
                         break;
                     }
                 case WebBrowserTask.Idle:
+                    break;
+                case WebBrowserTask.Waiting:
                     break;
                 default:
                     break;
@@ -1066,12 +1553,18 @@ namespace SakaiParser
             return studID;
         }
 
-        public void ParseStudentsAsync()
+        /// <summary>
+        /// Parse students from assignment
+        /// </summary>
+        public void ParseStudents()
         {
-            ParseStudentsAsync(dctAssignmentItems.Keys.ToArray()[0]);
+            ParseStudents(dctAssignmentItems.Keys.ToArray()[0]);
         }
-
-        public void ParseStudentsAsync(String assignment)
+        /// <summary>
+        /// Parse students from selected assignment
+        /// </summary>
+        /// <param name="assignment"></param>
+        public void ParseStudents(String assignment)
         {
             indexOfProcessingAssignment = -1;
             String[] assignments = dctAssignmentItems.Keys.ToArray();
@@ -1131,7 +1624,22 @@ namespace SakaiParser
         {
             return dctAssignmentItems.Values.Select(x => x.Title).ToArray();
         }
-
+        public string[] GetPublishedTestNames()
+        {
+            return dctTestAndQuizzesItems.Values.Select(x => x.Title).ToArray();
+        }
+        public void SetDelayOfTestDueDate(String testName, uint delay)
+        {
+            if (linkToTestsAndQuizzes != String.Empty)
+            {
+                currentTestDelay = delay;
+                currentTestName = testName;
+                webBrowserTask = WebBrowserTask.OpenTestAndQuizzesSettings;
+                confidentLoad = true;
+                webBrowser.Navigate(linkToTestsAndQuizzes);
+            }
+            
+        }
         public void GradeStudent(string assignmentName, string studentID, String mark)
         {
             Assignment assignment = dctAssignmentItems[assignmentName];
@@ -1177,12 +1685,25 @@ namespace SakaiParser
         /// <summary>
         /// Starts asynchronous assignment items parsing process
         /// </summary>
-        public void ParseAssignmentItemsAsync()
+        public void ParseAssignmentItems()
         {
-            webBrowserTask = WebBrowserTask.ParseAssignments;
-            webBrowser.Navigate(linkToAssignments);
+            if (linkToAssignments != String.Empty)
+            {
+                webBrowserTask = WebBrowserTask.ParseAssignments;
+                webBrowser.Navigate(linkToAssignments);
+            }
         }
-
+        /// <summary>
+        /// Starts asynchronous assignment items parsing process
+        /// </summary>
+        public void ParseTestsAndQuizzesItems()
+        {
+            if (linkToTestsAndQuizzes != String.Empty)
+            {
+                webBrowserTask = WebBrowserTask.ParseTestsAndQuizzes;
+                webBrowser.Navigate(linkToTestsAndQuizzes);
+            }
+        }
         public String[] GetWorksites()
         {
             return dctWorksites.Keys.ToArray();
@@ -1200,6 +1721,59 @@ namespace SakaiParser
             loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
             loginFrame.Navigate("javascript:document.forms[0].submit()");
             ReadWorksitesAsync();
+        }
+        public void AddAssignmentItem(  string title, string description, string grade,
+                                        string openday, string openmonth, string openyear,
+                                        string dueday, string duemonth, string dueyear,
+                                        string closeday, string closemonth, string closeyear)
+        {
+            AssignmentItemTitle = title;
+            AssignmentItemDecription = description;
+            AssignmentItemGrade = grade;
+            AssignmentItemOpenDay = openday;
+            AssignmentItemOpenMonth = openmonth;
+            AssignmentItemOpenYear = openyear;
+            AssignmentItemDueDay = dueday;
+            AssignmentItemDueMonth = duemonth;
+            AssignmentItemDueYear = dueyear;
+            AssignmentItemCloseDay = closeday;
+            AssignmentItemCloseMonth = closemonth;
+            AssignmentItemCloseYear = closeyear;
+            webBrowserTask = WebBrowserTask.AddAssignmentItems;
+            webBrowser.Navigate(linkToAssignments);
+        }
+        private void InvokeAssignmentItemPost()
+        {
+            webBrowserTask = WebBrowserTask.Waiting;
+            HtmlElementCollection asPosts = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+            foreach (HtmlElement asPost in asPosts)
+            {
+                if (asPost.GetAttribute("name") == "post")
+                {
+                    asPost.InvokeMember("CLICK");
+                }
+            }
+            confidentLoad = true;
+            webBrowserTask = WebBrowserTask.AddAssignmentItemsResultMessage;
+        }
+        private void GetAssignmentItemMessage()
+        {
+            String message = "";
+            HtmlElementCollection Release = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("div");
+            foreach (HtmlElement divs in Release)
+            {
+                if (divs.GetAttribute("className") == "alertMessage")
+                {
+                    message = divs.InnerText;
+                    break;
+                }
+                else
+                {
+                    message = String.Empty;
+                }
+            }
+            webBrowserTask = WebBrowserTask.Idle;
+            AddNewAssignmentItemProvider(message);
         }
     }
 }
