@@ -27,6 +27,7 @@
 // version 1.21 (20160503) Added SetDelayOfTestDueDate that modifies due date of test and event DelayOfTestAssigned (moskalenkoBV)
 // version 1.22 (20160530) Added method AddAssignmentItem that adds new assignment item and event AddNewAssignmentItem (moskalenkoBV)
 // version 1.23 (20160612) Fixed issue with Drafts in Assignments (moskalenkoBV)
+// version 1.24 (20160915) Added method CreateUser and base class SakaiWebParser. Fixed issue with Idle state (aeperepelitsyn)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -97,6 +98,29 @@ namespace SakaiParser
         public string Link;
     }
 
+    public class UserInfo
+    {
+        public UserInfo()
+        {
+            
+        }
+        public UserInfo(string userID, string userFirstName, string userLastName, string userEmail, string userPassword, string userRole)
+        {
+            ID = userID;
+            FirstName = userFirstName;
+            LastName = userLastName;
+            Email = userEmail;
+            Password = userPassword;
+            Rple = userRole;
+        }
+        public string ID;
+        public string FirstName;
+        public string LastName;
+        public string Email;
+        public string Password;
+        public string Rple;
+    }
+
     public class StudentInfo
     {
         public StudentInfo(string name, string id, string submitted, string status, string grade, bool released, string gradeLink, bool attached)
@@ -156,8 +180,10 @@ namespace SakaiParser
         LoadStudentAttachments,
         OpenManageGroupsSection,
         LoadGroupsEditor,
+        CreateUser,
         RenameStudent,
         ContinueStudentRenaming,
+        SetNewUserInfo,
         SelectStudentToGrade,
         GradeStudent,
         GradeResultMessage,
@@ -184,7 +210,38 @@ namespace SakaiParser
     public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
     public delegate void DelegateAddNewAssignmentItem(String message);
 
-    class SakaiParser285
+    public class SakaiWebParser
+    {
+        protected WebBrowser webBrowser;
+
+        protected WebBrowserTask webBrowserTask, webBrowserNextTask = WebBrowserTask.Idle;
+
+        protected bool confidentLoad;
+
+        protected UserInfo creatingUser;
+
+        protected virtual void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
+        {
+            
+        }
+
+        /// <summary>
+        /// Creates User. Web browser should be navigated to the User tab in Administration Workspace
+        /// </summary>
+        public void CreateUser(string userId, string userFirstName, string userLastName, string userEmail, string userPassword, string userRole)
+        {
+            CreateUser(new UserInfo(userId, userFirstName, userLastName, userEmail, userPassword, userRole));
+        }
+        public void CreateUser(UserInfo userInfo)
+        {
+            creatingUser = userInfo;
+            webBrowserTask = WebBrowserTask.CreateUser;
+            confidentLoad = true;
+            webBrowser_DocumentCompleted(webBrowser, null);
+        }
+    }
+
+    public class SakaiParser285 : SakaiWebParser
     {
         delegate void ConfirmDeleting();
 
@@ -192,9 +249,7 @@ namespace SakaiParser
         ConfirmDeleting confirmInvokeAssignment;
         ConfirmDeleting confirmAssignmentItemMessage;
 
-        WebBrowser webBrowser;
 
-        WebBrowserTask webBrowserTask;
         GroupEditorSectionTask groupSectionTask;
 
         Dictionary<string, string> dctWorksites;
@@ -250,7 +305,7 @@ namespace SakaiParser
         int indexOfProcessingAssignment;
         int indexOfProcessingStudent;
 
-        bool confidentLoad;
+        
         bool attachmentPresent;
 
         bool assignmentsParsed;
@@ -437,8 +492,9 @@ namespace SakaiParser
             webBrowser.Navigate(dctWorksites[worksiteName]);
         }
 
-        private void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
+        protected override void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
         {
+            if (webBrowserTask == WebBrowserTask.Busy) webBrowserTask = WebBrowserTask.Idle;
             if (!confidentLoad)
             {
                 if (e == null) return;
@@ -452,11 +508,6 @@ namespace SakaiParser
 
             switch (webBrowserTask)
             {
-                case WebBrowserTask.Busy:
-                    {
-                        webBrowserTask = WebBrowserTask.Idle;
-                        break;
-                    }
                 case WebBrowserTask.LogIn:
                     LogIn();
                     break;
@@ -571,7 +622,7 @@ namespace SakaiParser
                             link.InvokeMember("CLICK");
                         }
                     }
-                    if(linkToAssignments == "")
+                    if (linkToAssignments == "" && worksiteName != "Administration Workspace")
                     {
                         webBrowserTask = WebBrowserTask.ParseSelectedWorksite;
                         confidentLoad = true;
@@ -1315,6 +1366,42 @@ namespace SakaiParser
                         }
                         break;
                     }
+                case WebBrowserTask.CreateUser:
+                    {
+//                        HtmlElement inputSearch = webBrowser.Document.Window.Frames[1].Document.GetElementById("search");
+
+//                        if (inputSearch == null) throw new NullReferenceException("Input field is NULL.");
+
+//                        inputSearch.Document.GetElementById("search").SetAttribute("value", renamingStudentID);
+
+                        HtmlElementCollection framesAs = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
+
+                        foreach (HtmlElement a in framesAs)
+                        {
+                            if (a.GetAttribute("title").Contains("New User"))
+                            {
+                                a.InvokeMember("CLICK");
+                                break;
+                            }
+                        }
+
+                        Task asyncTask = new Task(() =>
+                        {
+                            Thread.Sleep(500);
+                        });
+
+                        asyncTask.ContinueWith((a) =>
+                        {
+                            confidentLoad = true;
+                            webBrowserTask = WebBrowserTask.SetNewUserInfo;
+                            webBrowser_DocumentCompleted(webBrowser, null);
+
+                        }, TaskScheduler.FromCurrentSynchronizationContext());
+
+                        asyncTask.Start();
+
+                        break;
+                    }
                 case WebBrowserTask.RenameStudent:
                     {
                         HtmlElement inputSearch = webBrowser.Document.Window.Frames[1].Document.GetElementById("search");
@@ -1380,6 +1467,47 @@ namespace SakaiParser
 
                         break;
                     }
+                case WebBrowserTask.SetNewUserInfo:
+                    {
+                        HtmlElementCollection inputCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+
+                        HtmlElement userIDInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("eid");
+                        HtmlElement firstNameInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("first-name");
+                        HtmlElement lastNameInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("last-name");
+                        HtmlElement emailInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("email");
+                        HtmlElement pwInput = webBrowser.Document.Window.Frames[1].Document.GetElementById("pw");
+                        HtmlElement pw0Input = webBrowser.Document.Window.Frames[1].Document.GetElementById("pw0");
+
+                        userIDInput.SetAttribute("value", creatingUser.ID);
+                        firstNameInput.SetAttribute("value", creatingUser.FirstName);
+                        lastNameInput.SetAttribute("value", creatingUser.LastName);
+                        emailInput.SetAttribute("value", creatingUser.Email);
+                        pwInput.SetAttribute("value", creatingUser.Password);
+                        pw0Input.SetAttribute("value", creatingUser.Password);
+
+                        HtmlElementCollection selectCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("select");
+                        foreach (HtmlElement htmlSelect in selectCollection)
+                        {
+                            HtmlElementCollection optionsCollection = htmlSelect.GetElementsByTagName("option");
+                            foreach (HtmlElement option in optionsCollection)
+                            {
+                                if (option.InnerText == creatingUser.Rple)
+                                {
+                                    option.SetAttribute("selected", "selected");
+                                    break;
+                                }
+                            }
+                        }
+
+                        foreach (HtmlElement elem in from HtmlElement he in inputCollection where he.GetAttribute("name").Contains("eventSubmit_doSave") select he)
+                        {
+                            elem.InvokeMember("CLICK");
+                        }
+
+                        confidentLoad = true;
+                        webBrowserTask = WebBrowserTask.Busy;
+                        break;
+                    }
                 case WebBrowserTask.SetNewFirstNameAndLastName:
                     {
                         HtmlElementCollection inputCollection =
@@ -1396,7 +1524,8 @@ namespace SakaiParser
                             elem.InvokeMember("CLICK");
                         }
 
-                        webBrowserTask = WebBrowserTask.Idle;
+//                        webBrowserNextTask = 
+                        webBrowserTask = WebBrowserTask.Busy;
                         break;
                     }
                 case WebBrowserTask.Idle:
@@ -1502,6 +1631,7 @@ namespace SakaiParser
                             {
                                 string text = td.InnerText.Trim();
                                 MatchCollection matches = Regex.Matches(text, @"\(([\w|\.|\s]*)\)"); // Gets student ID
+// To do: add check for cases unexpected formats (coused by "off#spring")
                                 studentID = matches[0].Groups[1].Value;
                                 studentName = text.Substring(0, text.IndexOf(" ("));
                                 gradeLink = td.GetElementsByTagName("a")[0].GetAttribute("href");
@@ -1721,6 +1851,8 @@ namespace SakaiParser
             confidentLoad = true;
             webBrowser_DocumentCompleted(webBrowser, null);
         }
+
+
 
         /// <summary>
         /// Renames User. Web browser should be navigated to the User tab in Administration Workspace
