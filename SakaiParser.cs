@@ -28,6 +28,7 @@
 // version 1.22 (20160530) Added method AddAssignmentItem that adds new assignment item and event AddNewAssignmentItem (moskalenkoBV)
 // version 1.23 (20160612) Fixed issue with Drafts in Assignments (moskalenkoBV)
 // version 1.24 (20160915) Added method CreateUser and base class SakaiWebParser. Fixed issue with Idle state (aeperepelitsyn)
+// version 1.25 (20170125) Added methods RemoveParticipants and LogOut. Implemented adding of participants during creation of group (aeperepelitsyn)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -43,6 +44,12 @@ using System.Windows.Forms;
 
 namespace SakaiParser
 {
+    public static class SakaiParserVersion
+    {
+        public const string Version = "version 1.25 (20170125)";
+        public const string Product = "SakaiParser";
+    }
+
     public class CourseTools
     {
         public string Title { get; set; }
@@ -188,6 +195,10 @@ namespace SakaiParser
         GradeStudent,
         GradeResultMessage,
         AddNewGroup,
+        NewGroupAdded,
+        AddParticipanUsernames,
+        RemovingParticipants,
+        RemovedParticipants,
         SetNewFirstNameAndLastName,
         Waiting
     }
@@ -209,6 +220,8 @@ namespace SakaiParser
     public delegate void DelegateStudentGraded(bool success, String releaseMessage);
     public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
     public delegate void DelegateAddNewAssignmentItem(String message);
+    public delegate void DelegateNewGroupCreated(String message);
+    public delegate void DelegateParticipantsRemoved(String[] removed);
 
     public class SakaiWebParser
     {
@@ -299,6 +312,8 @@ namespace SakaiParser
         string renamingStudentLastname;
 
         string[] addingStudentIDs;
+        string[] addingParticipantIDs;
+        string[] removingParticipantIDs;
 
         string deletingGroupName;
 
@@ -406,6 +421,23 @@ namespace SakaiParser
                 AddNewAssignmentItem(message);
             }
         }
+        public event DelegateNewGroupCreated NewGroupCreated;
+        private void NewGroupCreatedProvider(String message)
+        {
+            if (NewGroupCreated != null)
+            {
+                NewGroupCreated(message);
+            }
+        }
+        public event DelegateParticipantsRemoved ParticipantsRemoved;
+        private void ParticipantsRemovedProvider(String[] removed)
+        {
+            if (ParticipantsRemoved != null)
+            {
+                ParticipantsRemoved(removed);
+            }
+        }
+
         void ResetFields()
         {
             dctStudentInfos.Clear();
@@ -437,9 +469,9 @@ namespace SakaiParser
 
         }
 
-        public string InitialUrl { get; set; }
-        public string UserName { get; set; }
-        public string Password { get; set; }
+        private string InitialUrl { get; set; }
+        private string UserName { get; set; }
+        private string Password { get; set; }
 
         public bool IsIdle()
         {
@@ -469,7 +501,7 @@ namespace SakaiParser
         /// <summary>
         /// Function read worksite names for current authorized user.
         /// </summary>
-        private void ReadWorksitesAsync()
+        public void ReadWorksites()
         {
             bool renavigate = (webBrowserTask == WebBrowserTask.Idle);
             webBrowserTask = WebBrowserTask.GetMembershipLink;
@@ -495,6 +527,11 @@ namespace SakaiParser
         protected override void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
         {
             if (webBrowserTask == WebBrowserTask.Busy) webBrowserTask = WebBrowserTask.Idle;
+            // if (e.Url.AbsolutePath != (sender as WebBrowser).Url.AbsolutePath) return;
+            // //The page is finished loading 
+            // or condition
+            // (webBrowser.ReadyState != WebBrowserReadyState.Complete)
+
             if (!confidentLoad)
             {
                 if (e == null) return;
@@ -513,20 +550,23 @@ namespace SakaiParser
                     break;
                 case WebBrowserTask.ParseWorksites:
                     HtmlElement worksiteTable = webBrowser.Document.Window.Frames[0].Document.GetElementById("currentSites");
-                    HtmlElementCollection tableTDs = worksiteTable.GetElementsByTagName("td");
-                    foreach (HtmlElement worksiteTD in tableTDs)
+                    if (worksiteTable != null)
                     {
-                        if (worksiteTD.GetAttribute("headers") == "worksite")
+                        HtmlElementCollection tableTDs = worksiteTable.GetElementsByTagName("td");
+                        foreach (HtmlElement worksiteTD in tableTDs)
                         {
-                            HtmlElement linkToWorksite = worksiteTD.GetElementsByTagName("a")[0];
-                            string sLink = linkToWorksite.GetAttribute("href");
-                            if (dctWorksites.ContainsKey(worksiteTD.InnerText))
+                            if (worksiteTD.GetAttribute("headers") == "worksite")
                             {
-                               //SPExceptionProvider(SPExceptions.WorksiteNameAlreadyExist);
-                            }
-                            else
-                            {
-                                dctWorksites.Add(worksiteTD.InnerText, sLink);
+                                HtmlElement linkToWorksite = worksiteTD.GetElementsByTagName("a")[0];
+                                string sLink = linkToWorksite.GetAttribute("href");
+                                if (dctWorksites.ContainsKey(worksiteTD.InnerText))
+                                {
+                                    //SPExceptionProvider(SPExceptions.WorksiteNameAlreadyExist);
+                                }
+                                else
+                                {
+                                    dctWorksites.Add(worksiteTD.InnerText, sLink);
+                                }
                             }
                         }
                     }
@@ -615,7 +655,7 @@ namespace SakaiParser
                             linkToTestsAndQuizzes = link.GetAttribute("href");
                         }
                     }
-                    foreach(HtmlElement link in links)
+                    foreach (HtmlElement link in links)
                     {
                         if (link.GetAttribute("className") == "icon-sakai-iframe-site" && linkToAssignments == "")
                         {
@@ -651,12 +691,12 @@ namespace SakaiParser
                 case WebBrowserTask.ParseAssignments:
                     // To fix
                     HtmlElementCollection assignmentsTable = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("table");//my god
-                    if(assignmentsTable.Count > 1)
+                    if (assignmentsTable.Count > 1)
                     {
                         HtmlElementCollection kostls = webBrowser.Document.GetElementsByTagName("a");
-                        foreach(HtmlElement kostl in kostls)
+                        foreach (HtmlElement kostl in kostls)
                         {
-                            if(kostl.GetAttribute("title") == "Reset")
+                            if (kostl.GetAttribute("title") == "Reset")
                             {
                                 kostl.InvokeMember("CLICK");
                                 confidentLoad = true;
@@ -732,7 +772,7 @@ namespace SakaiParser
                     }
                     // Assignments are supposed to be parsed
                     assignmentsParsed = true;
-                    if(dctAssignmentItems.Count == 0)
+                    if (dctAssignmentItems.Count == 0)
                     {
                         confidentLoad = true;
                         webBrowserTask = WebBrowserTask.ParseAssignments;
@@ -759,22 +799,22 @@ namespace SakaiParser
                             Thread.Sleep(1000);
                         });
 
-                        asyncTask1.ContinueWith((a) =>
-                        {
-                            webBrowserTask = WebBrowserTask.CountinueAddAssignmentItems;
-                            confidentLoad = true;
-                            webBrowser_DocumentCompleted(webBrowser, null);
+                    asyncTask1.ContinueWith((a) =>
+                    {
+                        webBrowserTask = WebBrowserTask.CountinueAddAssignmentItems;
+                        confidentLoad = true;
+                        webBrowser_DocumentCompleted(webBrowser, null);
 
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
 
-                        asyncTask1.Start();
+                    asyncTask1.Start();
                     break;
                 case WebBrowserTask.CountinueAddAssignmentItems:
                     webBrowserTask = WebBrowserTask.Waiting;
                     HtmlElementCollection asAreas = webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames[0].Document.GetElementsByTagName("body");
-                    foreach(HtmlElement asArea in asAreas)
+                    foreach (HtmlElement asArea in asAreas)
                     {
-                            asArea.InnerHtml = AssignmentItemDecription;
+                        asArea.InnerHtml = AssignmentItemDecription;
                     }
                     HtmlElementCollection asSelects = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("select");
                     foreach (HtmlElement asSelect in asSelects)
@@ -908,13 +948,13 @@ namespace SakaiParser
                             Thread.Sleep(1000);
                         });
 
-                        asyncTask2.ContinueWith((a) =>
-                        {
-                            InvokeAssignmentItemPost();
+                    asyncTask2.ContinueWith((a) =>
+                    {
+                        InvokeAssignmentItemPost();
 
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
 
-                        asyncTask2.Start();
+                    asyncTask2.Start();
                     break;
                 case WebBrowserTask.AddAssignmentItemsResultMessage:
                     webBrowserTask = WebBrowserTask.Waiting;
@@ -923,15 +963,15 @@ namespace SakaiParser
                             Thread.Sleep(1000);
                         });
 
-                        asyncTask4.ContinueWith((a) =>
-                        {
+                    asyncTask4.ContinueWith((a) =>
+                    {
 
-                            GetAssignmentItemMessage();
+                        GetAssignmentItemMessage();
 
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
+                    }, TaskScheduler.FromCurrentSynchronizationContext());
 
-                        asyncTask4.Start();
-                        webBrowserTask = WebBrowserTask.Idle;
+                    asyncTask4.Start();
+                    webBrowserTask = WebBrowserTask.Idle;
                     break;
                 case WebBrowserTask.ParseTestsAndQuizzes:
                     dctTestAndQuizzesItems.Clear();
@@ -942,7 +982,7 @@ namespace SakaiParser
                     {
                         if (testName.GetAttribute("className") == "titlePub")
                         {
-                            dctTestAndQuizzesItems.Add(ii.ToString(),new TestsAndQuizzes(testName.InnerText));
+                            dctTestAndQuizzesItems.Add(ii.ToString(), new TestsAndQuizzes(testName.InnerText));
                             ii++;
                         }
                     }
@@ -1016,7 +1056,7 @@ namespace SakaiParser
                     {
                         if (date.GetAttribute("id") == "assessmentSettingsAction:startDate")
                         {
-                            date.SetAttribute("value",localDate.ToString(culture));
+                            date.SetAttribute("value", localDate.ToString(culture));
                         }
                         if (date.GetAttribute("id") == "assessmentSettingsAction:endDate")
                         {
@@ -1125,18 +1165,91 @@ namespace SakaiParser
                         }
 
                     break;
+                case WebBrowserTask.RemovingParticipants:
+                    {
+                        HtmlElementCollection lineParticipantsCollection =
+                            webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("tbody");
+                        List<String> idsSakaiCollection = new List<string>();
+                        List<String> idsCollection = new List<string>();
+                        foreach (HtmlElement lineParticipant in lineParticipantsCollection[1].Children)
+                        {
+                            String[] htmlParts = lineParticipant.InnerHtml.Split(new string[] { "<H5>", "<h5>", "</H5>", "</h5>"}, StringSplitOptions.RemoveEmptyEntries);
+                            if (htmlParts.Length == 3)
+                            {
+                                String[] participantNames = htmlParts[1].Trim().Split(new char[] { ',', '(', ')' }, StringSplitOptions.RemoveEmptyEntries);
+                                String name = participantNames[participantNames.Length - 1].Trim();
+                                if (removingParticipantIDs.Contains(name))
+                                {
+                                    String[] participantLineHTML = htmlParts[2].Trim().Split(new char[] { ' '}, StringSplitOptions.RemoveEmptyEntries);
+                                    foreach (String htmlStringPerts in participantLineHTML)
+                                    {
+                                        if (htmlStringPerts.StartsWith("id=remove_"))
+                                        {
+                                            idsSakaiCollection.Add(htmlStringPerts.Substring(3));
+                                            idsCollection.Add(name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for (int i = 0; i < idsSakaiCollection.Count; i++)
+                        {
+                            HtmlElement htmlCheckbox = webBrowser.Document.Window.Frames[1].Document.GetElementById(idsSakaiCollection[i]);
+                            htmlCheckbox.InvokeMember("CLICK");
+                        }
+                        lineParticipantsCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                        foreach (HtmlElement htmlInputElement in lineParticipantsCollection)
+                        {
+                            if (htmlInputElement.GetAttribute("accesskey") == "s")
+                            {
+                                removingParticipantIDs = idsCollection.ToArray();
+                                htmlInputElement.InvokeMember("CLICK");
+                                break;
+                            }   
+                        }
+                        confidentLoad = true;
+                        webBrowserTask = WebBrowserTask.RemovedParticipants;
+                        break;
+                    }
+                case WebBrowserTask.RemovedParticipants:
+                    {
+                        webBrowserTask = WebBrowserTask.Idle;
+                        ParticipantsRemovedProvider(removingParticipantIDs);
+                        removingParticipantIDs = new string[]{};
+                        break;
+                    }
                 case WebBrowserTask.OpenManageGroupsSection:
                     // Todo: find link to Manage Groups section.
-
+                    String[] IDs = GetStudentIDs();
+                    ///////////////////////////////////
+                    // GetParticipants
+                    List<String> addingParticipants = new List<String>();
+                    List<String> participantsID = new List<String>();
+                    HtmlElementCollection lisParticipantsCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("h5");
+                    foreach (HtmlElement htmlParticipantText in lisParticipantsCollection)
+                    {
+                        String[] participantNames = htmlParticipantText.InnerText.Trim().Split(new char[] { ',', '(', ')' }, StringSplitOptions.RemoveEmptyEntries);
+                        participantsID.Add(participantNames[participantNames.Length - 1].Trim());
+                    }
+                    for (int i = 0; i < addingStudentIDs.Length; i++)
+                    {
+                        if (!participantsID.Contains(addingStudentIDs[i]))
+                        {
+                            addingParticipants.Add(addingStudentIDs[i]);
+                        }
+                    }
+                    addingParticipantIDs = addingParticipants.ToArray();
+                    ///////////////////////////////////
                     linkToManageGroupsSection = "";
                     HtmlElementCollection lisElementCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("li");
                     foreach (HtmlElement element in lisElementCollection)
                     {
-                        if (element.GetAttribute("role") == "menuitem" && element.InnerHtml.Contains("doManageGroupHelper"))
+                        if (element.GetAttribute("role") == "menuitem" && element.InnerHtml.Contains(addingParticipantIDs.Length == 0 ? "doManageGroupHelper" : "doParticipantHelper"))
                         {
                             MatchCollection matchCollection = Regex.Matches(element.InnerHtml,
                                 @"(onclick)\s*=\s*""\s*(location)\s*=\s*'(?<link>.*)'\s*;");
                             linkToManageGroupsSection = matchCollection[0].Groups["link"].Value;
+                            break;
                         }
                     }
 
@@ -1148,11 +1261,65 @@ namespace SakaiParser
 
                     //webBrowser.Navigate(linkToManageGroupsSection);
                     // LoadGroupsEditor is a page where we set name of group and add participants.
-                    webBrowserTask = WebBrowserTask.LoadGroupsEditor;
-
+                    if (addingParticipantIDs.Length == 0)
+                    {
+                        webBrowserTask = WebBrowserTask.LoadGroupsEditor;
+                    }
+                    else
+                    {
+                        webBrowserTask = WebBrowserTask.AddParticipanUsernames;
+                    }
                     confidentLoad = true; // The Frame URL of doesn't match Browser URL, beacuse Browser URL has nothing to do with frame.
                     //webBrowser_DocumentCompleted(webBrowser, e);
 
+                    break;
+                case WebBrowserTask.AddParticipanUsernames:
+                    if (addingParticipantIDs.Length > 0)
+                    {
+                        HtmlElementCollection usernamesElementCollection =
+                            webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("textarea");
+                        String participantIDs = String.Empty;
+                        foreach (String participantID in addingParticipantIDs)
+                        {
+                            participantIDs += participantID + "\n";
+                        }
+                        usernamesElementCollection[0].InnerText = participantIDs;
+                        addingParticipantIDs = new string[] { };
+                        HtmlElementCollection inputsCollection =
+                            webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                        foreach (HtmlElement inputElement in inputsCollection)
+                        {
+                            if (inputElement.Id == "content::continue")
+                            {
+                                webBrowser.ScriptErrorsSuppressed = true;
+                                confidentLoad = true;
+                                inputElement.InvokeMember("click");
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        HtmlElementCollection inputsCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
+                        foreach (HtmlElement htmlInputElement in inputsCollection)
+                        {
+                            if (htmlInputElement.Id == "content::role-row:2:role-select")
+                            {
+                                htmlInputElement.SetAttribute("checked", "checked");
+                            }
+                            else if (htmlInputElement.GetAttribute("accesskey") == "s")
+                            {
+                                webBrowser.ScriptErrorsSuppressed = false;
+                                confidentLoad = true;
+                                if (inputsCollection.Count < 6)
+                                {
+                                    webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
+                                }
+                                htmlInputElement.InvokeMember("click");
+                                break;
+                            }
+                        }
+                    }
                     break;
                 case WebBrowserTask.LoadGroupsEditor:
                     // Here we find the link to Create New Group section
@@ -1275,7 +1442,12 @@ namespace SakaiParser
                     //addGroupFrame.Navigate("javascript:document.forms[0].submit()");
                     //webBrowserTask = WebBrowserTask.GetMembershipLink;
 
+                    confidentLoad = true;
+                    webBrowserTask = WebBrowserTask.NewGroupAdded;
+                    break;
+                case WebBrowserTask.NewGroupAdded:
                     webBrowserTask = WebBrowserTask.Idle;
+                    NewGroupCreated(addingGroupName);
 
                     break;
                 case WebBrowserTask.SelectStudentToGrade:
@@ -1368,19 +1540,19 @@ namespace SakaiParser
                     }
                 case WebBrowserTask.CreateUser:
                     {
-//                        HtmlElement inputSearch = webBrowser.Document.Window.Frames[1].Document.GetElementById("search");
+                        //                        HtmlElement inputSearch = webBrowser.Document.Window.Frames[1].Document.GetElementById("search");
 
-//                        if (inputSearch == null) throw new NullReferenceException("Input field is NULL.");
+                        //                        if (inputSearch == null) throw new NullReferenceException("Input field is NULL.");
 
-//                        inputSearch.Document.GetElementById("search").SetAttribute("value", renamingStudentID);
+                        //                        inputSearch.Document.GetElementById("search").SetAttribute("value", renamingStudentID);
 
                         HtmlElementCollection framesAs = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
 
-                        foreach (HtmlElement a in framesAs)
+                        foreach (HtmlElement htmlNewUser in framesAs)
                         {
-                            if (a.GetAttribute("title").Contains("New User"))
+                            if (htmlNewUser.GetAttribute("title").Contains("New User"))
                             {
-                                a.InvokeMember("CLICK");
+                                htmlNewUser.InvokeMember("CLICK");
                                 break;
                             }
                         }
@@ -1390,7 +1562,7 @@ namespace SakaiParser
                             Thread.Sleep(500);
                         });
 
-                        asyncTask.ContinueWith((a) =>
+                        asyncTask.ContinueWith((htmlNewUser) =>
                         {
                             confidentLoad = true;
                             webBrowserTask = WebBrowserTask.SetNewUserInfo;
@@ -1412,11 +1584,11 @@ namespace SakaiParser
 
                         HtmlElementCollection framesAs = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("a");
 
-                        foreach (HtmlElement a in framesAs)
+                        foreach (HtmlElement htmlStudent in framesAs)
                         {
-                            if (a.GetAttribute("title").Contains("Search"))
+                            if (htmlStudent.GetAttribute("title").Contains("Search"))
                             {
-                                a.InvokeMember("CLICK");
+                                htmlStudent.InvokeMember("CLICK");
                                 break;
                             }
                         }
@@ -1426,7 +1598,7 @@ namespace SakaiParser
                             Thread.Sleep(500);
                         });
 
-                        asyncTask.ContinueWith((a) =>
+                        asyncTask.ContinueWith((htmlStudent) =>
                         {
                             webBrowserTask = WebBrowserTask.ContinueStudentRenaming;
                             confidentLoad = true;
@@ -1524,7 +1696,7 @@ namespace SakaiParser
                             elem.InvokeMember("CLICK");
                         }
 
-//                        webBrowserNextTask = 
+                        //                        webBrowserNextTask = 
                         webBrowserTask = WebBrowserTask.Busy;
                         break;
                     }
@@ -1593,6 +1765,13 @@ namespace SakaiParser
             return result;
         }
 
+
+        public void RemoveParticipants(String[] idsForRemove)
+        {
+            removingParticipantIDs = idsForRemove;
+            webBrowserTask = WebBrowserTask.RemovingParticipants;
+            webBrowser.Navigate(linkToSiteEditor);
+        }
 
         public void DownloadStudentsAttachments()
         {
@@ -1702,7 +1881,7 @@ namespace SakaiParser
         /// <returns></returns>
         public String[] GetStudentIDs()
         {
-            return dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray();
+            return dctAssignmentItems.Count > 0 ? dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray() : new string[]{};
         }
 
         public String[] GetStudentNames()
@@ -1738,7 +1917,10 @@ namespace SakaiParser
         /// </summary>
         public void ParseStudents()
         {
-            ParseStudents(dctAssignmentItems.Keys.ToArray()[0]);
+            if (worksiteName != "Administration Workspace")
+            {
+                ParseStudents(dctAssignmentItems.Keys.ToArray()[0]);
+            }
         }
         /// <summary>
         /// Parse students from selected assignment
@@ -1906,7 +2088,33 @@ namespace SakaiParser
             loginFrame.Document.GetElementById("eid").SetAttribute("value", UserName);
             loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
             loginFrame.Navigate("javascript:document.forms[0].submit()");
-            ReadWorksitesAsync();
+            ReadWorksites();
+        }
+        public void LogOut()
+        {
+            String logoutURL = String.Empty;
+            HtmlElement htmlElementLogin = webBrowser.Document.GetElementById("loginLinks");
+            if (htmlElementLogin != null)
+            {
+                String[] logoutLinks = htmlElementLogin.Children[1].OuterHtml.Split('"');
+                foreach (string logoutLink in logoutLinks)
+                {
+                    if (logoutLink.Contains(webBrowser.Document.Domain))
+                    {
+                        logoutURL = logoutLink;
+                        break;
+                    }
+                }
+            }
+            if(logoutURL == String.Empty)
+            {
+                if (webBrowser.Document.Url.LocalPath.LastIndexOf('/') > 0)
+                {
+                    logoutURL = webBrowser.Document.Domain + webBrowser.Document.Url.LocalPath.Substring(0, webBrowser.Document.Url.LocalPath.IndexOf('/', 1)) + "/logout";
+                }
+            }
+            webBrowser.Navigate(logoutURL);
+            webBrowserTask = WebBrowserTask.Busy;
         }
         public void AddAssignmentItem(  string title, string description, double grade,
                                         string openday, string openmonth, string openyear,
