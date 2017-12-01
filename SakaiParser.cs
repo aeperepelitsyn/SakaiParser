@@ -30,6 +30,7 @@
 // version 1.24 (20160915) Added method CreateUser and base class SakaiWebParser. Fixed issue with Idle state (aeperepelitsyn)
 // version 1.25 (20170125) Added methods RemoveParticipants and LogOut. Implemented adding of participants during creation of group (aeperepelitsyn)
 // version 1.26 (20170426) Fixed issue with Drafts in Assignments. Added methods ReadSubmissions, WriteSubmissions and SetTaskAndCallAgain (aeperepelitsyn)
+// version 1.27 (20170529) Fixed issue with SelectWorksite for worksite without Assignments. (aeperepelitsyn)
 //
 ///////////////////////////////////////////////////////////////////////////////
 
@@ -47,7 +48,7 @@ namespace SakaiParser
 {
     public static class SakaiParserVersion
     {
-        public const string Version = "version 1.26 (20170426)";
+        public const string Version = "version 1.27 (20170529)";
         public const string Product = "SakaiParser";
     }
 
@@ -498,9 +499,9 @@ namespace SakaiParser
             worksiteName = "";
             linkToMembership = "";  
             SPException = null;
+            webBrowser.ScriptErrorsSuppressed = true;
             this.webBrowser = webBrowser;
             webBrowser.DocumentCompleted += webBrowser_DocumentCompleted;
-            
 
             confirmDeletingVoid = new ConfirmDeleting(InvokeGroupDeleting);
             confirmInvokeAssignment = new ConfirmDeleting(InvokeAssignmentItemPost);
@@ -701,24 +702,19 @@ namespace SakaiParser
                             link.InvokeMember("CLICK");
                         }
                     }
-                    if (linkToAssignments == "" && worksiteName != "Administration Workspace")
+                    if (linkToSiteEditor == "" && worksiteName != "Administration Workspace")
                     {
                         webBrowserTask = WebBrowserTask.ParseSelectedWorksite;
+                        // if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
                         confidentLoad = true;
                     }
                     else
                     {
+                        // If it is okay, we have linkToSiteEditor
+                        //if (linkToAssignments == "") throw new Exception("Unable to find Assignments link");
                         webBrowserTask = WebBrowserTask.Idle;
                         WorksiteSelectedProvider();
                     }
-                    //if (linkToAssignments == "") throw new Exception("Unable to find Assignments link");
-
-                    // if (linkToSiteEditor == "") throw new Exception("Unable to find SiteEditor link");
-
-                    // If it is okay, we have linkToSiteEditor
-
-                    //webBrowserTask = WebBrowserTask.Idle;
-                    //WorksiteSelectedProvider();
                     break;
                 case WebBrowserTask.GoToAssignments:
                     //////////////////////////////////////////////////////////////////////////////////
@@ -1436,7 +1432,7 @@ namespace SakaiParser
                             }
                             else if (htmlInputElement.GetAttribute("accesskey") == "s")
                             {
-                                webBrowser.ScriptErrorsSuppressed = false;
+                                //webBrowser.ScriptErrorsSuppressed = false;
                                 confidentLoad = true;
                                 if (inputsCollection.Count < 6)
                                 {
