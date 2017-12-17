@@ -31,7 +31,7 @@
 // version 1.25 (20170125) Added methods RemoveParticipants and LogOut. Implemented adding of participants during creation of group (aeperepelitsyn)
 // version 1.26 (20170426) Fixed issue with Drafts in Assignments. Added methods ReadSubmissions, WriteSubmissions and SetTaskAndCallAgain (aeperepelitsyn)
 // version 1.27 (20170529) Fixed issue with SelectWorksite for worksite without Assignments. (aeperepelitsyn)
-//
+// version 1.28 (20171217) Added ability to choose the group at worksite. Miscellaneous problems are fixed. (aeperepelitsyn)
 ///////////////////////////////////////////////////////////////////////////////
 
 using System;
@@ -48,7 +48,7 @@ namespace SakaiParser
 {
     public static class SakaiParserVersion
     {
-        public const string Version = "version 1.27 (20170529)";
+        public const string Version = "version 1.28 (20171217)";
         public const string Product = "SakaiParser";
     }
 
@@ -92,6 +92,20 @@ namespace SakaiParser
         public string Scale { get; set; }
         public bool Draft { get; set; }
 
+        public static Dictionary<string, StudentInfo> GetNonEmptyStudentInfos(
+            Dictionary<string, Assignment> dictionaryAssignments)
+        {
+            Dictionary<string, StudentInfo> result = new Dictionary<string, StudentInfo>();
+            foreach (Assignment assignment in dictionaryAssignments.Values)
+            {
+                result = assignment.StudentInfosDictionary;
+                if (result.Count > 0)
+                {
+                    break;
+                }
+            }
+            return result;
+        }
     }
 
     public class TestsAndQuizzes : CourseTools
@@ -102,10 +116,42 @@ namespace SakaiParser
         }
 
     }
-    public struct SubmittedFile
+    public class SubmittedFile
     {
+        public SubmittedFile(string name, string link, string size, string date)
+        {
+            Name = name;
+            Link = link;
+            Size = size;
+            Date = date;
+        }
         public string Name;
         public string Link;
+        public string Size;
+        public string Date;
+        public string Icon;
+
+        public static implicit operator String(SubmittedFile a)
+        {
+            return a.ToString();
+        }
+        public override string ToString()
+        {
+            String result = String.Empty;
+            DateTime dt;
+            bool success = DateTime.TryParse(Date, out dt);
+            if (success)
+            {
+                string extension = String.Empty;
+                int position = Name.LastIndexOf(".");
+                if (position > 0)
+                {
+                    extension = Name.Substring(position+1);
+                }
+                result = dt.ToString("yyyy.MM.dd") + " [" + extension.ToUpper() + "] ";
+            }
+            return result + '\"' + Name + '\"';
+        }
     }
 
     public class UserInfo
@@ -121,18 +167,49 @@ namespace SakaiParser
             LastName = userLastName;
             Email = userEmail;
             Password = userPassword;
-            Rple = userRole;
+            Role = userRole;
         }
         public string ID;
         public string FirstName;
         public string LastName;
         public string Email;
         public string Password;
-        public string Rple;
+        public string Role;
+        public string CourseRole;
+        public string CourseStatus;
+
+        public static string[] GetStudentsNames(UserInfo[] participants)
+        {
+            return GetStudentsNames(participants.ToList());
+        }
+        public static string[] GetStudentsNames(List<UserInfo> participants)
+        {
+            List<String> students = new List<string>();
+            foreach (UserInfo participant in participants)
+            {
+                if (participant.CourseRole == "Student" && participant.CourseStatus == "Active")
+                {
+                    students.Add(participant.LastName+ " " + participant.FirstName);
+                }
+            }
+            return students.ToArray();
+        }
+
+        public string GetName()
+        {
+            return LastName + " " + FirstName;
+        }
     }
 
     public class StudentInfo
     {
+        public StudentInfo(string name,string id, string grade)
+        {
+            Name = name;
+            ID = id;
+            Grade = grade;
+        }
+
         public StudentInfo(string name, string id, string submitted, string status, string grade, bool released, string gradeLink, bool attached)
         {
             Name = name;
@@ -143,6 +220,29 @@ namespace SakaiParser
             Grade = grade;
             Released = released;
             GradeLink = gradeLink;
+        }
+
+        public static bool EqualIDs(StudentInfo[] si1, StudentInfo[] si2)
+        {
+            bool result = (si1.Length == si2.Length);
+            if (result)
+            {
+                for (int i = 0; i < si1.Length; i++)
+                {
+                    if (!si1[i].Equals(si2[i]))
+                    {
+                        result = false;
+                        break;
+                    }
+                }
+            }
+            return result;
+        }
+
+        public bool Equals(StudentInfo si)
+        {
+            bool result = (si.ID == ID && si.Name == Name);
+            return result;
         }
 
         public List<SubmittedFile> SubmittedFiles { get; set; }
@@ -156,10 +256,59 @@ namespace SakaiParser
         public string Name { get; set; }
         public string ID { get; set; }
 
+        public static implicit operator String(StudentInfo a)
+        {
+            return a.ToString();
+        }
+
         public override string ToString()
         {
             return string.Format("{0} ({1})", Name, ID);
         }
+
+        public bool IsEmpty()
+        {
+            return !FilesAttached && !Released && String.IsNullOrEmpty(Grade) && String.IsNullOrEmpty(Submitted) &&
+                   Status == "No Submission"; // "Returned"
+        }
+
+        public string GetSubmittedLink(string submitted)
+        {
+            string link = String.Empty;
+            if (SubmittedFiles != null)
+            {
+                foreach (SubmittedFile file in SubmittedFiles)
+                {
+                    if (file.ToString() == submitted)
+                    {
+                        link = file.Link;
+                        break;
+                    }
+                }
+            }
+            return link;
+        }
+
+        public static StudentInfo GetInfo(StudentInfo[] infos, String student)
+        {
+            StudentInfo info = null;
+            foreach (StudentInfo sinfo in infos)
+            {
+                if (sinfo.ToString() == student)
+                {
+                    info = sinfo;
+                    break;
+                }
+            }
+            return info;
+        }
+    }
+
+    public class Attachment
+    {
+        public string FileName;
+        public string SubmissionDate;
+        public string Link;
     }
 
     public enum GroupEditorSectionTask
@@ -172,6 +321,7 @@ namespace SakaiParser
     public enum WebBrowserTask
     {
         Idle,
+        Stop,
         Busy,
         LogIn,
         GetMembershipLink,
@@ -189,6 +339,7 @@ namespace SakaiParser
         LoadStudents,
         ReloadStudents,
         LoadStudentAttachments,
+        ChoiceGroupAtAssignment,
         ReadStudentSubmissions,
         ReadIndividualSubmission,
         WaitIndividualSubmission,
@@ -207,12 +358,15 @@ namespace SakaiParser
         AddParticipanUsernames,
         RemovingParticipants,
         RemovedParticipants,
+        GetParticipants,
         SetNewFirstNameAndLastName,
         Waiting
     }
 
     public enum SPExceptions
     {
+        IncorrectSakaiURL,
+        IncorrectLoginOrPassword,
         UnableToFindMembership,
         UnableToFindLinkToUsersTab,
         WorksiteNameAlreadyExist,
@@ -222,17 +376,20 @@ namespace SakaiParser
         TwoAssignmentsWithTheSameName
     }               
     public delegate void DelegateException(SPExceptions exception, String message);
+    public delegate void DelegateProgressReport(int progressValue, int progressMaximum, String progressMessage);
     public delegate void DelegateWorksitesReady(String[] worksites);
     public delegate void DelegateWorksiteSelected(String worksiteName);
     public delegate void DelegateAssignmentItemsReady(String[] assignmentTitles, bool[] assignmentDrafts);
-    public delegate void DelegateStudentsInformationReady(String[] studentIDs); 
+    public delegate void DelegateStudentsInformationReady(String[] studentIDs);
+    public delegate void DelegateUsersInformationReady(UserInfo[] participants);
     public delegate void DelegateTestsAndQuizzesReady(String[] testsName);
     public delegate void DelegateStudentGraded(bool success, String releaseMessage);
     public delegate void DelegateDelayOfTestAssigned(String testName, uint delay);
     public delegate void DelegateAddNewAssignmentItem(String message);
     public delegate void DelegateNewGroupCreated(String message);
+    public delegate void DelegateGroupListReady(String[] groupList);
     public delegate void DelegateParticipantsRemoved(String[] removed);
-    public delegate void DelegateSubmissionsReady(StudentInfo[] studentsInfo);
+    public delegate void DelegateSubmissionsReady(String assignment, StudentInfo[] studentsInfo);
 
     public class SakaiWebParser
     {
@@ -244,17 +401,87 @@ namespace SakaiParser
 
         protected UserInfo creatingUser;
 
+        protected Task scheduledThreadTask;
+
+        public event DelegateProgressReport ProgressReport;
+
+        protected bool ProgressReportProvider(int progressValue, int progressMaximum, String progressMessage)
+        {
+            bool result = false;
+            if (ProgressReport != null)
+            {
+                ProgressReport(progressValue, progressMaximum, progressMessage);
+                result = true;
+            }
+            return result;
+        }
+
+        public bool Stop()
+        {
+            bool result = !IsIdle();
+            scheduledThreadTask = null;
+            webBrowserTask = WebBrowserTask.Stop;
+            if (result)
+            {
+                ProgressReportProvider(0, 100, "Interrupted by user");
+            }
+            return result;
+        }
+
         protected virtual void webBrowser_DocumentCompleted(object sender, WebBrowserDocumentCompletedEventArgs e)
         {
             
         }
+        
+        public bool IsIdle()
+        {
+            return webBrowserTask == WebBrowserTask.Idle;
+        }
+
+        /// <summary>
+        /// Schedules the call of DocumentCompleted for provided Task after required delay in milliseconds.
+        /// </summary>
+        protected void ScheduleTask(int milliseconds, WebBrowserTask task)
+        {
+            // Never Start(), only Run()!
+            scheduledThreadTask =
+            Task.Run(() =>
+            {
+                Thread.Sleep(milliseconds);
+            }).ContinueWith((a) =>
+            {
+                if (scheduledThreadTask != null)
+                {
+                    SetTaskAndCallAgain(task);
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
+        protected void ScheduleTask(int milliseconds, Uri url)
+        {
+            // Never Start(), only Run()!
+            scheduledThreadTask =
+            Task.Run(() =>
+            {
+                Thread.Sleep(milliseconds);
+            }).ContinueWith((a) =>
+            {
+                if (scheduledThreadTask != null)
+                {
+                    webBrowser.Navigate(url);
+                }
+            }, TaskScheduler.FromCurrentSynchronizationContext());
+        }
 
         protected void SetTaskAndCallAgain(WebBrowserTask task)
         {
-            confidentLoad = true;
-            webBrowserTask = task;
-            webBrowser_DocumentCompleted(webBrowser, null);
+            if (webBrowserTask != WebBrowserTask.Stop)
+            {
+                confidentLoad = true;
+                webBrowserTask = task;
+                webBrowser_DocumentCompleted(webBrowser, null);
+            }
         }
+
 
         /// <summary>
         /// Creates User. Web browser should be navigated to the User tab in Administration Workspace
@@ -287,7 +514,6 @@ namespace SakaiParser
         Dictionary<string, TestsAndQuizzes> dctTestAndQuizzesItems;
 
         Queue<WebBrowserTask> spTasks;
-
         string worksiteName;
         string linkToMembership;
         string linkToManageGroupsSection;
@@ -313,7 +539,9 @@ namespace SakaiParser
         private string AssignmentNoSuccessMessage;
 
         private string AssignmentName;
+        private string AssignmentGroup;
         private string[] AssignmentStudentIDs;
+        private StudentInfo[] AssignmentStudentInfos;
         private Dictionary<String, String> AssignmentUsersTutorComment;
 
         private String currentTestName;
@@ -335,6 +563,7 @@ namespace SakaiParser
         string[] addingStudentIDs;
         string[] addingParticipantIDs;
         string[] removingParticipantIDs;
+        private List<UserInfo> allUsers;
 
         string deletingGroupName;
 
@@ -346,6 +575,8 @@ namespace SakaiParser
 
         //bool assignmentsParsed;
 
+        public const string AllGroups = "All Sections/Groups";
+        
         public event DelegateException SPException;
 
         private void SPExceptionProvider(SPExceptions exception)
@@ -358,6 +589,10 @@ namespace SakaiParser
             String message;
             switch(exception)
             {
+                case SPExceptions.IncorrectSakaiURL:
+                    message = "Incorrect Sakai URL was provided"; break;
+                case SPExceptions.IncorrectLoginOrPassword:
+                    message = "Incorrect Login or Password"; break;
                 case SPExceptions.UnableToFindMembership:
                     message = "Unable to find Membership link"; break;
                 case SPExceptions.UnableToFindLinkToUsersTab:
@@ -375,7 +610,7 @@ namespace SakaiParser
                 default:
                     message = "Unknown exception"; break;
             }
-            message += ": " + details;
+            message += (details.Length > 0 ? ": " + details : String.Empty);
             if (SPException != null)
             {
                 SPException(exception, message);
@@ -386,12 +621,17 @@ namespace SakaiParser
             }
         }
 
+        public event DelegateWorksitesReady Initialized;
         public event DelegateWorksitesReady WorksitesReady;
         private void WorksitesReadyProvider()
         {
             if (WorksitesReady != null)
             {
                 WorksitesReady(GetWorksites());
+            }
+            else if (Initialized != null)
+            {
+                Initialized(GetWorksites());
             }
         }
 
@@ -437,6 +677,14 @@ namespace SakaiParser
                 StudentsInformationReady(GetStudentIDs());
             }
         }
+        public event DelegateUsersInformationReady UsersInformationReady;
+        private void UsersInformationReadyProvider(UserInfo[] participants)
+        {
+            if (UsersInformationReady != null)
+            {
+                UsersInformationReady(participants);
+            }
+        }
         public event DelegateStudentGraded StudentGraded;
         private void StudentGradedProvider(bool success, String releaseMessage)
         {
@@ -461,6 +709,14 @@ namespace SakaiParser
                 NewGroupCreated(message);
             }
         }
+        public event DelegateGroupListReady GroupListReady;
+        private void GroupListReadyProvider(String[] groupsList)
+        {
+            if (GroupListReady != null)
+            {
+                GroupListReady(groupsList);
+            }
+        }
         public event DelegateParticipantsRemoved ParticipantsRemoved;
         private void ParticipantsRemovedProvider(String[] removed)
         {
@@ -470,11 +726,11 @@ namespace SakaiParser
             }
         }
         public event DelegateSubmissionsReady SubmissionsReady;
-        private void SubmissionsReadyProvider(StudentInfo[] studentsInfo)
+        private void SubmissionsReadyProvider(String assignment, StudentInfo[] studentsInfo)
         {
             if (SubmissionsReady != null)
             {
-                SubmissionsReady(studentsInfo);
+                SubmissionsReady(assignment, studentsInfo);
             }
         }
 
@@ -482,6 +738,20 @@ namespace SakaiParser
         {
             dctStudentInfos.Clear();
             dctAssignmentItems.Clear();
+        }
+
+        private void ResetAllEvents()
+        {
+            // Todo: add implementation.
+            //this.AddNewAssignmentItem = null;
+        }
+
+        public void Dispose()
+        {
+            ResetAllEvents();
+            //LogOut();
+            webBrowser.DocumentCompleted -= webBrowser_DocumentCompleted;
+            Stop();
         }
 
         public SakaiParser285(WebBrowser webBrowser, string initialUrl, string userName, string password)
@@ -494,6 +764,7 @@ namespace SakaiParser
             dctWorksites = new Dictionary<string, string>();
             dctAssignmentItems = new Dictionary<string, Assignment>();
             dctStudentInfos = new Dictionary<string, StudentInfo>();
+            allUsers = new List<UserInfo>();
             dctTestAndQuizzesItems = new Dictionary<string, TestsAndQuizzes>();
             spTasks = new Queue<WebBrowserTask>();
             worksiteName = "";
@@ -502,21 +773,16 @@ namespace SakaiParser
             webBrowser.ScriptErrorsSuppressed = true;
             this.webBrowser = webBrowser;
             webBrowser.DocumentCompleted += webBrowser_DocumentCompleted;
-
             confirmDeletingVoid = new ConfirmDeleting(InvokeGroupDeleting);
             confirmInvokeAssignment = new ConfirmDeleting(InvokeAssignmentItemPost);
             confirmAssignmentItemMessage = new ConfirmDeleting(GetAssignmentItemMessage);
-
         }
 
         private string InitialUrl { get; set; }
         private string UserName { get; set; }
         private string Password { get; set; }
 
-        public bool IsIdle()
-        {
-            return webBrowserTask == WebBrowserTask.Idle;
-        }
+        
 
         /// <summary>
         /// Initializes program passing Login in navigating to specified worksite.
@@ -640,17 +906,7 @@ namespace SakaiParser
                     {
                         webBrowserTask = WebBrowserTask.ParseWorksites;
                         webBrowser.Navigate("javascript:window.frames[0].document.forms[4].elements[0].click()");
-                        Task asyncTask = new Task(() =>
-                        {
-                            Thread.Sleep(500);
-                        });
-
-                        asyncTask.ContinueWith((a) =>
-                        {
-                            webBrowser.Navigate(webBrowser.Url);
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
-
-                        asyncTask.Start();
+                        ScheduleTask(500, webBrowser.Url);
                     }
                     else
                     {
@@ -659,7 +915,13 @@ namespace SakaiParser
                     }
                     break;
                 case WebBrowserTask.GetMembershipLink:
-
+                    if (IsInvalidLogin())
+                    {
+                        webBrowserTask = WebBrowserTask.Idle;
+                        SPExceptionProvider(SPExceptions.IncorrectLoginOrPassword, UserName);
+                        webBrowser.Navigate(InitialUrl);
+                        break;
+                    }
                     HtmlElementCollection linksCollection = webBrowser.Document.GetElementsByTagName("a");
                     foreach (HtmlElement link in linksCollection)
                         if (link.GetAttribute("className") == "icon-sakai-membership")
@@ -834,17 +1096,7 @@ namespace SakaiParser
                             AssignmentMenuLink.InvokeMember("CLICK");
                         }
                     }
-                    Task asyncTask1 = new Task(() =>
-                        {
-                            Thread.Sleep(1000);
-                        });
-
-                    asyncTask1.ContinueWith((a) =>
-                    {
-                        SetTaskAndCallAgain(WebBrowserTask.CountinueAddAssignmentItems);
-                    }, TaskScheduler.FromCurrentSynchronizationContext());
-
-                    asyncTask1.Start();
+                    ScheduleTask(1000, WebBrowserTask.CountinueAddAssignmentItems);
                     break;
                 case WebBrowserTask.CountinueAddAssignmentItems:
                     webBrowserTask = WebBrowserTask.Waiting;
@@ -1086,8 +1338,8 @@ namespace SakaiParser
                     var culture = new CultureInfo("en-US");
                     DateTime localDate = DateTime.Now;
                     DateTime newdate = DateTime.Now;
-                    TimeSpan timer = new TimeSpan(0, (int)currentTestDelay, 0);
-                    newdate = newdate.Add(timer);
+                    TimeSpan timerTimeSpan = new TimeSpan(0, (int)currentTestDelay, 0);
+                    newdate = newdate.Add(timerTimeSpan);
                     HtmlElementCollection dates = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("input");
                     foreach (HtmlElement date in dates)
                     {
@@ -1150,29 +1402,7 @@ namespace SakaiParser
                     if (attachmentPresent)
                     {
                         // We are here if student has attachment. The page with it is loaded
-                        HtmlElementCollection uls = webBrowser.Document.Window.Frames[1].Document.Forms["gradeForm"].Document.GetElementsByTagName("ul");
-                        foreach (HtmlElement ul in uls)
-                        {
-                            if (ul.GetAttribute("className") == "attachList indnt1")
-                            {
-                                HtmlElementCollection alinks = ul.GetElementsByTagName("a");
-                                foreach (HtmlElement alink in alinks)
-                                {
-                                    string slink = alink.GetAttribute("href");
-                                    string fileName = alink.InnerText;
-
-                                    if (dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.SubmittedFiles == null)
-                                    {
-                                        dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.SubmittedFiles = new List<SubmittedFile>();
-                                    }
-
-                                    SubmittedFile file = new SubmittedFile();
-                                    file.Link = slink;
-                                    file.Name = fileName;
-                                    dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value.SubmittedFiles.Add(file);
-                                }
-                            }
-                        }
+                        ReadAttachments(dctAssignmentItems.ElementAt(indexOfProcessingAssignment).Value.StudentInfosDictionary.ElementAt(indexOfProcessingStudent).Value);
                     }
 
                     indexOfProcessingStudent++;
@@ -1203,9 +1433,45 @@ namespace SakaiParser
 
                     break;
                 ////////////////////////////////////////////////////////////////
+                case WebBrowserTask.ChoiceGroupAtAssignment:
+                    {
+                        AssignmentStudentInfos = null;
+                        HtmlElementCollection sd = webBrowser.Document.Window.Frames[1].Document.Forms["viewForm"].GetElementsByTagName("select");
+                        foreach (HtmlElement htmlSelect in sd)
+                        {
+                            HtmlElementCollection optionsCollection = htmlSelect.GetElementsByTagName("option");
+                            foreach (HtmlElement option in optionsCollection)
+                            {
+                                if (option.InnerText == AssignmentGroup)
+                                {
+                                    if (option.GetAttribute("selected") != true.ToString())
+                                    {
+                                        option.SetAttribute("selected", "selected");
+                                        AssignmentStudentInfos = ParseLoadingStudents(AssignmentName, false);
+                                        htmlSelect.InvokeMember("onchange");
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                        ScheduleTask(55, WebBrowserTask.ReadStudentSubmissions);
+                        break;
+                    }
                 case WebBrowserTask.ReadStudentSubmissions:
                     {
-                        ParseLoadingStudents(AssignmentName, false);
+                        StudentInfo[] sis = ParseLoadingStudents(AssignmentName, false);
+                        if (AssignmentStudentInfos != null)
+                        {
+                            if (StudentInfo.EqualIDs(sis, AssignmentStudentInfos))
+                            {
+                                ScheduleTask(1555, WebBrowserTask.ReadStudentSubmissions);
+                                break;
+                            }
+                            if (AssignmentStudentIDs == null)
+                            {
+                                AssignmentStudentIDs = sis.Select(si => si.ID).ToArray();
+                            }
+                        }
                         StudentIDs = dctAssignmentItems[AssignmentName].StudentInfosDictionary.Keys.ToList();
 
                         if (AssignmentStudentIDs != null ? AssignmentStudentIDs.Length > 0 : false)
@@ -1230,6 +1496,13 @@ namespace SakaiParser
                             }
                             AssignmentStudentIDs = StudentIDs.ToArray();
                         }
+                        for (int i = StudentIDs.Count-1; 0 <= i; i--)
+                        {
+                            if (dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[i]].IsEmpty())
+                            {
+                                StudentIDs.RemoveAt(i);
+                            }
+                        }
                         SetTaskAndCallAgain(WebBrowserTask.ReadIndividualSubmission);
                         break;
                     }
@@ -1240,6 +1513,11 @@ namespace SakaiParser
                             webBrowserTask = WebBrowserTask.WaitIndividualSubmission;
                             confidentLoad = true;
                             webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[0]].GradeLink);
+                            ProgressReportProvider(
+                                dctAssignmentItems[AssignmentName].StudentInfosDictionary.Count - StudentIDs.Count,
+                                dctAssignmentItems[AssignmentName].StudentInfosDictionary.Count, "Processing Submission \"" + AssignmentName + "\" for " +
+                                dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[0]].ToString()
+                            );
                         }
                         else
                         {
@@ -1248,45 +1526,47 @@ namespace SakaiParser
                             {
                                 AssignmentUsersTutorComment = null;
                             }
-                            SubmissionsReady(dctAssignmentItems[AssignmentName].StudentInfosDictionary.Values.ToArray());
+                            ProgressReportProvider(
+                                dctAssignmentItems[AssignmentName].StudentInfosDictionary.Count,
+                                dctAssignmentItems[AssignmentName].StudentInfosDictionary.Count, 
+                                "Student Submissions of \"" + AssignmentName + "\" are Ready!");
+                            SubmissionsReady(AssignmentName, dctAssignmentItems[AssignmentName].StudentInfosDictionary.Values.ToArray());
                         }
                         break;
                     }
                 case WebBrowserTask.WaitIndividualSubmission:
-                {
-                    Task asyncTaskSubmission = new Task(() =>
                     {
-                        Thread.Sleep(1000);
-                    });
-
-                    asyncTaskSubmission.ContinueWith((a) =>
-                    {
-                        SetTaskAndCallAgain(WebBrowserTask.ReadSubmission);
-                    }, TaskScheduler.FromCurrentSynchronizationContext());
-
-                    asyncTaskSubmission.Start();
-                    break;
-                }
-                case WebBrowserTask.ReadSubmission:
-                {
-                    HtmlElementCollection textAreas = webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames[0].Document.GetElementsByTagName("body");
-                    foreach (HtmlElement textArea in textAreas)
-                    {
-                        dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[0]].TutorComments = textArea.InnerText;
-                        if (AssignmentUsersTutorComment != null)
+                        WebBrowserTask nextTask = WebBrowserTask.ReadSubmission;
+                        if (webBrowser.Document.Window.Frames.Count <= 1 || webBrowser.Document.Window.Frames[1].Document.Window.Frames.Count == 0 || webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames.Count == 0)
                         {
-                            textArea.InnerText = AssignmentUsersTutorComment[StudentIDs[0]];
-                            SaveAndReturnToStudent();
+                            nextTask = WebBrowserTask.WaitIndividualSubmission;
                         }
-                        else
+                        ScheduleTask(55, nextTask);
+                        break;
+                    }
+                case WebBrowserTask.ReadSubmission:
+                    {
+                        HtmlElementCollection textAreas = webBrowser.Document.Window.Frames[1].Document.Window.Frames[0].Document.Window.Frames[0].Document.GetElementsByTagName("body");
+
+                        ReadAttachments(dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[0]]);
+
+                        foreach (HtmlElement textArea in textAreas)
                         {
-                            StudentIDs.RemoveAt(0);
-                            SetTaskAndCallAgain(WebBrowserTask.ReadIndividualSubmission);
+                            dctAssignmentItems[AssignmentName].StudentInfosDictionary[StudentIDs[0]].TutorComments = textArea.InnerText;
+                            if (AssignmentUsersTutorComment != null)
+                            {
+                                textArea.InnerText = AssignmentUsersTutorComment[StudentIDs[0]];
+                                SaveAndReturnToStudent();
+                            }
+                            else
+                            {
+                                StudentIDs.RemoveAt(0);
+                                SetTaskAndCallAgain(WebBrowserTask.ReadIndividualSubmission);
+                            }
+                            break;
                         }
                         break;
                     }
-                    break;
-                }
                 ////////////////////////////////////////////////////////////////
                 case WebBrowserTask.RemovingParticipants:
                     {
@@ -1341,6 +1621,32 @@ namespace SakaiParser
                         removingParticipantIDs = new string[] { };
                         break;
                     }
+                ////////////////////////////////////////////////////////////////
+                case WebBrowserTask.GetParticipants:
+                    {
+                        HtmlElementCollection lineParticipantsCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("tbody");
+                        allUsers.Clear();
+                        foreach (HtmlElement lineParticipant in lineParticipantsCollection[1].Children)
+                        {
+                            String[] htmlParts = lineParticipant.InnerHtml.Split(new string[] { "<H5>", "<h5>", "</H5>", "</h5>" }, StringSplitOptions.RemoveEmptyEntries);
+                            if (htmlParts.Length == 3)
+                            {
+                                UserInfo user = new UserInfo();
+                                String[] participantNames = htmlParts[1].Trim().Split(new char[] { ',', '(', ')' }, StringSplitOptions.RemoveEmptyEntries);
+                                user.ID = participantNames[participantNames.Length - 1].Trim();
+                                user.LastName = participantNames[participantNames.Length - 3].Trim();
+                                user.FirstName = participantNames[participantNames.Length - 2].Trim();
+                                String[] participantRoleAndStatus = htmlParts[2].Trim().Split(new string[] { "OPTION selected value=" }, StringSplitOptions.RemoveEmptyEntries);
+                                user.CourseStatus = participantRoleAndStatus[2].Trim().Split(new char[] { '>', '<' }, StringSplitOptions.RemoveEmptyEntries)[1].Trim();
+                                user.CourseRole = participantRoleAndStatus[1].Trim().Split(new char[] { '>', '<' }, StringSplitOptions.RemoveEmptyEntries)[1].Trim();
+                                allUsers.Add(user);
+                            }
+                        }
+                        webBrowserTask = WebBrowserTask.Idle;
+                        UsersInformationReadyProvider(allUsers.ToArray());
+                        break;
+                    }
+                ////////////////////////////////////////////////////////////////
                 case WebBrowserTask.OpenManageGroupsSection:
                     // Todo: find link to Manage Groups section.
                     String[] IDs = GetStudentIDs();
@@ -1485,10 +1791,12 @@ namespace SakaiParser
                                 break;
                             }
                         case GroupEditorSectionTask.DeleteExistingGroup:
+                        case GroupEditorSectionTask.GetGroupList:
                             {
 
                                 webBrowserTask = WebBrowserTask.Idle;
 
+                                List<String> groupList = new List<string>();
                                 HtmlElementCollection tablesCollection = webBrowser.Document.Window.Frames[1].Document.GetElementsByTagName("table");
                                 foreach (HtmlElement element in tablesCollection)
                                 {
@@ -1500,16 +1808,32 @@ namespace SakaiParser
                                         HtmlElementCollection trsCollection = element.GetElementsByTagName("tr");
                                         foreach (HtmlElement trElement in trsCollection)
                                         {
-                                            if (trElement.InnerText.Contains(deletingGroupName))
+                                            if (String.IsNullOrEmpty(trElement.InnerText) || trElement.InnerText.Trim() == "TitleSizeRemove?")
+                                            {
+                                                continue;
+                                            }
+                                            else if (groupSectionTask == GroupEditorSectionTask.GetGroupList)
+                                            {
+                                                String[] lines = trElement.InnerHtml.Split(new String[] { "<TD><SPAN>", "</SPAN> </TD>" }, StringSplitOptions.RemoveEmptyEntries);
+                                                groupList.Add(lines[0].Trim());
+                                            }
+                                            else if (trElement.InnerText.Contains(deletingGroupName))
                                             {
                                                 if (trElement.GetElementsByTagName("span")[0].InnerText == deletingGroupName)
                                                 {
-                                                    HtmlElement inputToCheck = trElement.GetElementsByTagName("input")[0];
+                                                    HtmlElement inputToCheck =
+                                                        trElement.GetElementsByTagName("input")[0];
                                                     inputToCheck.InvokeMember("CLICK");
                                                 }
                                             }
                                         }
                                     }
+                                }
+
+                                if (groupSectionTask == GroupEditorSectionTask.GetGroupList)
+                                {
+                                    GroupListReadyProvider(groupList.ToArray());
+                                    break;
                                 }
 
                                 HtmlElement deleteButtonInputElement = webBrowser.Document.Window.Frames[1].Document.GetElementById("delete-groups");
@@ -1523,8 +1847,6 @@ namespace SakaiParser
 
                                 break;
                             }
-                        case GroupEditorSectionTask.GetGroupList:
-                            break;
                         default:
                             throw new ArgumentOutOfRangeException();
                     }
@@ -1683,19 +2005,7 @@ namespace SakaiParser
                                 break;
                             }
                         }
-
-                        Task asyncTask = new Task(() =>
-                        {
-                            Thread.Sleep(500);
-                        });
-
-                        asyncTask.ContinueWith((htmlNewUser) =>
-                        {
-                            SetTaskAndCallAgain(WebBrowserTask.SetNewUserInfo);
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
-
-                        asyncTask.Start();
-
+                        ScheduleTask(500, WebBrowserTask.SetNewUserInfo);
                         break;
                     }
                 case WebBrowserTask.RenameStudent:
@@ -1717,18 +2027,7 @@ namespace SakaiParser
                             }
                         }
 
-                        Task asyncTask = new Task(() =>
-                        {
-                            Thread.Sleep(500);
-                        });
-
-                        asyncTask.ContinueWith((htmlStudent) =>
-                        {
-                            SetTaskAndCallAgain(WebBrowserTask.ContinueStudentRenaming);
-                        }, TaskScheduler.FromCurrentSynchronizationContext());
-
-                        asyncTask.Start();
-
+                        ScheduleTask(500, WebBrowserTask.ContinueStudentRenaming);
                         break;
                     }
                 case WebBrowserTask.ContinueStudentRenaming:
@@ -1784,7 +2083,7 @@ namespace SakaiParser
                             HtmlElementCollection optionsCollection = htmlSelect.GetElementsByTagName("option");
                             foreach (HtmlElement option in optionsCollection)
                             {
-                                if (option.InnerText == creatingUser.Rple)
+                                if (option.InnerText == creatingUser.Role)
                                 {
                                     option.SetAttribute("selected", "selected");
                                     break;
@@ -1894,11 +2193,22 @@ namespace SakaiParser
             if (String.IsNullOrWhiteSpace(groupName)) throw new ArgumentNullException("The given GroupName is incorrect. Can't delete new group.");
 
             deletingGroupName = groupName;
+            addingStudentIDs = new string[0];
             groupSectionTask = GroupEditorSectionTask.DeleteExistingGroup;
             webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
             webBrowser.Navigate(linkToSiteEditor);
 
             return result;
+        }
+
+        public void ParseGroupList()
+        {
+            if (String.IsNullOrWhiteSpace(linkToSiteEditor)) throw new Exception("Link to SiteEditor is empty. Can't delete new group.");
+
+            addingStudentIDs = new string[0];
+            groupSectionTask = GroupEditorSectionTask.GetGroupList;
+            webBrowserTask = WebBrowserTask.OpenManageGroupsSection;
+            webBrowser.Navigate(linkToSiteEditor);
         }
 
         /// <summary>
@@ -1918,16 +2228,30 @@ namespace SakaiParser
         }
 
         /// <summary>
-        /// Method works with html and gets all required information about students.
-        /// Works with indexOfProcessingAssignment, it should be set.
+        /// Method works with html and puts all required information about students to dctAssignmentItems.
+        /// Works with all student list but returns StudentInfo array of students of selected group.
         /// </summary>
         private StudentInfo[] ParseLoadingStudents(int assignmentIndex, bool gradecall)
         {
             return ParseLoadingStudents(dctAssignmentItems.ElementAt(assignmentIndex).Key, gradecall);
         }
-        private StudentInfo[] ParseLoadingStudents(string assignmentName, bool gradecall)
+        private StudentInfo[] ParseLoadingStudents(string assignmentName,  bool gradecall)
         {
-            HtmlElementCollection submissionTable = webBrowser.Document.Window.Frames[1].Document.Forms["listSubmissionsForm"].Document.GetElementsByTagName("table");
+            List<String> parsedStudents = new List<string>();
+            bool isSubmissionsAvailable = true;
+            HtmlElementCollection submissionTable = null;
+            try
+            {
+                submissionTable = webBrowser.Document.Window.Frames[1].Document.Forms["listSubmissionsForm"].Document.GetElementsByTagName("table");
+            }
+            catch (Exception e)
+            {
+                isSubmissionsAvailable = false;
+            }
+            if (!isSubmissionsAvailable)
+            {
+                return null;
+            }
 
             foreach (HtmlElement table in submissionTable)
             {
@@ -1991,6 +2315,7 @@ namespace SakaiParser
                         {
                             if (studentID != "" && studentName != "")
                             {
+                                parsedStudents.Add(studentID);
                                 Dictionary<string, StudentInfo> sid = dctAssignmentItems[assignmentName].StudentInfosDictionary;
                                 StudentInfo si = new StudentInfo(studentName, studentID, submitted, status, grade, released, gradeLink, attached);
                                 if (sid.ContainsKey(studentID))
@@ -2007,8 +2332,44 @@ namespace SakaiParser
 
                 }
             }
+            return gradecall ? null : dctAssignmentItems[assignmentName].StudentInfosDictionary.Values.Where(si => parsedStudents.Contains(si.ID)).ToArray();
+        }
 
-            return gradecall? null: dctAssignmentItems[assignmentName].StudentInfosDictionary.Values.ToArray();
+        // Reads attachments from open grading page (the browser must be navigated to this page).
+        private int ReadAttachments(StudentInfo studentInfo)
+        {
+            if (studentInfo.SubmittedFiles == null)
+            {
+                studentInfo.SubmittedFiles = new List<SubmittedFile>();
+            }
+            studentInfo.SubmittedFiles.Clear();
+            HtmlElementCollection uls = webBrowser.Document.Window.Frames[1].Document.Forms["gradeForm"].Document.GetElementsByTagName("ul");
+            foreach (HtmlElement ul in uls)
+            {
+                if (ul.GetAttribute("className") == "attachList indnt1")
+                {
+                    HtmlElementCollection lis = ul.GetElementsByTagName("li");
+                    foreach (HtmlElement li in lis)
+                    {
+                        string[] imglines = li.Children[0].OuterHtml.Split(new char[] { '"', '>', '<' }, StringSplitOptions.RemoveEmptyEntries);
+                        String icon = imglines[imglines.Length - 1].Trim();
+                        String link = li.Children[1].GetAttribute("href").Trim();
+                        String name = li.Children[1].InnerText.Trim();
+                        string[] spanlines = li.Children[2].InnerText.Split(new char[] { '(', ';', ')' }, StringSplitOptions.RemoveEmptyEntries);
+                        String size = spanlines[0].Trim();
+                        String date = spanlines[1].Trim();
+
+                        SubmittedFile file = new SubmittedFile(name, link, size, date);
+                        if (icon.Length > 0)
+                        {
+                            file.Icon = link.Substring(0, link.IndexOf("/", 10)) + icon;
+                        }
+                        studentInfo.SubmittedFiles.Add(file);
+                    }
+                }
+            }
+            studentInfo.SubmittedFiles = studentInfo.SubmittedFiles.OrderByDescending(si => si.ToString()).ToList();
+            return studentInfo.SubmittedFiles.Count;
         }
 
         public Dictionary<String, StudentInfo> GetStudentsInformation(string assignmentTitle)
@@ -2023,87 +2384,155 @@ namespace SakaiParser
         /// <returns></returns>
         public String[] GetStudentIDs()
         {
-            return dctAssignmentItems.Count > 0 ? dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary.Keys.ToList().OrderBy(q => q).ToArray() : new string[]{};
+            string[] allStudents = null;
+            if (allUsers != null)
+            {
+                allStudents = (from ui in allUsers where ui.CourseRole == "Student" select ui.ID).ToArray();
+            }
+            else
+            {
+                allStudents = Assignment.GetNonEmptyStudentInfos(dctAssignmentItems).Keys.ToList().OrderBy(q => q).ToArray();
+            }
+            return allStudents;
         }
 
         public String[] GetStudentNames()
         {
-            List<String> names = new List<String>();
-            String[] studIDs = GetStudentIDs();
-            Dictionary<String, StudentInfo> studentInfos = dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary;
-            foreach (String studentID in studIDs)
+            String[] names = GetStudentIDs();
+            if (allUsers != null)
             {
-                names.Add(studentInfos[studentID].Name.Replace(",", ""));
+                names = allUsers.Select(ui => ui.GetName()).ToArray();
             }
-            return names.ToArray();
+            else
+            {
+                Dictionary<String, StudentInfo> studentInfos = Assignment.GetNonEmptyStudentInfos(dctAssignmentItems);
+                names = names.Select(id => studentInfos[id].Name.Replace(",", "")).ToArray();
+            }
+            return names;
         }
 
         public String GetStudentIdByName(String name)
         {
             String studID = "";
             String[] studIDs = GetStudentIDs();
-            Dictionary<String, StudentInfo> studentInfos = dctAssignmentItems.ElementAt(0).Value.StudentInfosDictionary;
-            foreach (String studentID in studIDs)
+            if (allUsers != null)
             {
-                if (studentInfos[studentID].Name.Replace(",", "") == name)
+                foreach (UserInfo ui in allUsers)
                 {
-                    studID = studentID;
-                    break;
+                    if (ui.GetName() == name)
+                    {
+                        studID = ui.ID;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                Dictionary<String, StudentInfo> studentInfos = Assignment.GetNonEmptyStudentInfos(dctAssignmentItems);
+                foreach (String studentID in studIDs)
+                {
+                    if (studentInfos.ContainsKey(studentID) && studentInfos[studentID].Name.Replace(",", "") == name)
+                    {
+                        studID = studentID;
+                        break;
+                    }
+
                 }
             }
             return studID;
         }
 
-        private void ProcessSubmissions(string assignmentName, string[] studentIDs, Dictionary<String, String> usersTutorComment)
+        private void ProcessSubmissions(string assignmentName, string selectedGroup, string[] studentIDs, Dictionary<String, String> usersTutorComment)
         {
-            if (dctAssignmentItems.Keys.Contains(assignmentName) && (studentIDs != null ? studentIDs.Length > 0 : true))
+            if (dctAssignmentItems.Keys.Contains(assignmentName) && (!String.IsNullOrEmpty(selectedGroup) || studentIDs == null || studentIDs.Length > 0))
             {
                 confidentLoad = true;
+                AssignmentStudentInfos = null;
                 AssignmentName = assignmentName;
+                AssignmentGroup = selectedGroup;
                 AssignmentStudentIDs = studentIDs;
                 AssignmentUsersTutorComment = usersTutorComment;
                 dctAssignmentItems[assignmentName].StudentInfosDictionary.Clear();
-                webBrowserTask = WebBrowserTask.ReadStudentSubmissions;
+                if (String.IsNullOrEmpty(selectedGroup))
+                {
+                    webBrowserTask = WebBrowserTask.ReadStudentSubmissions;
+                }
+                else
+                {
+                    webBrowserTask = WebBrowserTask.ChoiceGroupAtAssignment;
+                }
                 webBrowser.Document.Window.Frames[1].Navigate(dctAssignmentItems[assignmentName].Link);
             }
         }
         /// <summary>
         /// Starts asynchronous writing of submissions
         /// </summary>
+        public void WriteSubmissions(string assignmentName, String studentID, String tutorComment)
+        {
+            Dictionary<String, String> usersTutorComment = new Dictionary<string, string>();
+            usersTutorComment.Add(studentID, tutorComment);
+            WriteSubmissions(assignmentName, usersTutorComment);
+        }
         public void WriteSubmissions(string assignmentName, Dictionary<String, String> usersTutorComment)
         {
-            ProcessSubmissions(assignmentName, usersTutorComment.Keys.ToArray(), usersTutorComment);
+            ProcessSubmissions(assignmentName, null, usersTutorComment.Keys.ToArray(), usersTutorComment);
+        }
+
+        /// <summary>
+        /// Starts asynchronous reading of submissions for the group
+        /// </summary>
+        public void ReadSubmissions(string assignmentName, string selectedGroupOrStudent, bool isGroupSelected)
+        {
+            ProcessSubmissions(assignmentName, 
+                isGroupSelected ? selectedGroupOrStudent : AllGroups,
+                isGroupSelected ? null : selectedGroupOrStudent == AllGroups ? null : 
+                new string[] { GetStudentIdByName(selectedGroupOrStudent) }, null);
         }
         /// <summary>
         /// Starts asynchronous reading of submissions
         /// </summary>
         public void ReadSubmissions(string assignmentName, string[] studentIDs)
         {
-            ProcessSubmissions(assignmentName, studentIDs, null);
+            ProcessSubmissions(assignmentName, null, studentIDs, null);
         }
         /// <summary>
         /// Starts asynchronous reading of submissions
         /// </summary>
         public void ReadSubmissions(string assignmentName)
         {
-            ProcessSubmissions(assignmentName, null, null);
+            ProcessSubmissions(assignmentName, null, null, null);
+        }
+
+        /// <summary>
+        /// Parse all users from the worksite
+        /// </summary>
+        public void ParseUsersAtWorksite()
+        {
+            webBrowserTask = WebBrowserTask.GetParticipants;
+            webBrowser.Navigate(linkToSiteEditor);
         }
 
         /// <summary>
         /// Parse students from assignment
         /// </summary>
-        public void ParseStudents()
+        public bool ParseStudentsAtAssignment()
         {
+            bool result = false;
             if (worksiteName != "Administration Workspace")
             {
-                ParseStudents(dctAssignmentItems.Keys.ToArray()[0]);
+                if (dctAssignmentItems.Keys.Count > 0)
+                {
+                    ParseStudentsAtAssignment(dctAssignmentItems.Keys.ToArray()[0]);
+                    result = true;
+                }
             }
+            return result;
         }
         /// <summary>
         /// Parse students from selected assignment
         /// </summary>
         /// <param name="assignment"></param>
-        public void ParseStudents(String assignment)
+        public void ParseStudentsAtAssignment(String assignment)
         {
             indexOfProcessingAssignment = -1;
             String[] assignments = dctAssignmentItems.Keys.ToArray();
@@ -2197,7 +2626,7 @@ namespace SakaiParser
         /// <summary>
         /// Starts asynchronous student attachments parsing process
         /// </summary>
-        public void ParseStudentAttachmentsAsync()
+        private void ParseStudentAttachmentsAsync()
         {
 
         }
@@ -2256,13 +2685,30 @@ namespace SakaiParser
             return dctAssignmentItems[assignmentName].StudentInfosDictionary.Values.ToArray();
         }
 
+        private bool IsInvalidLogin()
+        {
+            return webBrowser.Document.Body.InnerText.Contains("Invalid loginuser id");
+        }
+
         private void LogIn()
         {
-            HtmlWindow loginFrame = webBrowser.Document.Window.Frames[0];
-            loginFrame.Document.GetElementById("eid").SetAttribute("value", UserName);
-            loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
-            loginFrame.Navigate("javascript:document.forms[0].submit()");
-            ReadWorksites();
+            bool successfullyOpened = false;
+            try
+            {
+                HtmlWindow loginFrame = webBrowser.Document.Window.Frames[0];
+                loginFrame.Document.GetElementById("eid").SetAttribute("value", UserName);
+                loginFrame.Document.GetElementById("pw").SetAttribute("value", Password);
+                loginFrame.Navigate("javascript:document.forms[0].submit()");
+                successfullyOpened = true;
+            }
+            catch (Exception e)
+            {
+                SPExceptionProvider(SPExceptions.IncorrectSakaiURL, InitialUrl);
+            }
+            if (successfullyOpened)
+            {
+                ReadWorksites();
+            }
         }
         public void LogOut()
         {
